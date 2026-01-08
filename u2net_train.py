@@ -48,17 +48,21 @@ def muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v):
 
 model_name = 'u2net' #'u2netp'
 
-data_dir = os.path.join(os.getcwd(), 'train_data' + os.sep)
-tra_image_dir = os.path.join('DUTS', 'DUTS-TR', 'DUTS-TR', 'im_aug' + os.sep)
-tra_label_dir = os.path.join('DUTS', 'DUTS-TR', 'DUTS-TR', 'gt_aug' + os.sep)
+data_dir = os.path.join(os.getcwd(), 'train_data', 'daowenb402' + os.sep)
+tra_image_dir = 'images' + os.sep
+tra_label_dir = 'masks' + os.sep
 
 image_ext = '.jpg'
 label_ext = '.png'
 
 model_dir = os.path.join(os.getcwd(), 'saved_models', model_name + os.sep)
 
-epoch_num = 100000
-batch_size_train = 12
+# ======= 用户可调参数 =======
+epoch_num = 12  # finetune建议12-24个epoch，可根据loss变化调整
+save_every_n_epochs = 3  # 每隔几个epoch保存一次模型
+batch_size_train = 8  # 根据显存调整，如果OOM可以改小
+# ============================
+
 batch_size_val = 1
 train_num = 0
 val_num = 0
@@ -84,6 +88,14 @@ print("---")
 
 train_num = len(tra_img_name_list)
 
+# 自动计算每个epoch的iteration数和保存频率
+iterations_per_epoch = (train_num + batch_size_train - 1) // batch_size_train  # 向上取整
+save_frq = iterations_per_epoch * save_every_n_epochs  # 每N个epoch保存一次
+print(f"Iterations per epoch: {iterations_per_epoch}")
+print(f"Will save model every {save_every_n_epochs} epochs ({save_frq} iterations)")
+print(f"Total epochs: {epoch_num}, Total iterations: {epoch_num * iterations_per_epoch}")
+print("---")
+
 salobj_dataset = SalObjDataset(
     img_name_list=tra_img_name_list,
     lbl_name_list=tra_lbl_name_list,
@@ -91,74 +103,86 @@ salobj_dataset = SalObjDataset(
         RescaleT(320),
         RandomCrop(288),
         ToTensorLab(flag=0)]))
-salobj_dataloader = DataLoader(salobj_dataset, batch_size=batch_size_train, shuffle=True, num_workers=1)
+salobj_dataloader = DataLoader(salobj_dataset, batch_size=batch_size_train, shuffle=True, num_workers=0)  # Windows上用0避免多进程问题
 
-# ------- 3. define model --------
-# define the net
-if(model_name=='u2net'):
-    net = U2NET(3, 1)
-elif(model_name=='u2netp'):
-    net = U2NETP(3,1)
+if __name__ == '__main__':
+    # ------- 3. define model --------
+    # define the net
+    if(model_name=='u2net'):
+        net = U2NET(3, 1)
+    elif(model_name=='u2netp'):
+        net = U2NETP(3,1)
 
-if torch.cuda.is_available():
-    net.cuda()
+    if torch.cuda.is_available():
+        net.cuda()
 
-# ------- 4. define optimizer --------
-print("---define optimizer...")
-optimizer = optim.Adam(net.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
-
-# ------- 5. training process --------
-print("---start training...")
-ite_num = 0
-running_loss = 0.0
-running_tar_loss = 0.0
-ite_num4val = 0
-save_frq = 2000 # save the model every 2000 iterations
-
-for epoch in range(0, epoch_num):
-    net.train()
-
-    for i, data in enumerate(salobj_dataloader):
-        ite_num = ite_num + 1
-        ite_num4val = ite_num4val + 1
-
-        inputs, labels = data['image'], data['label']
-
-        inputs = inputs.type(torch.FloatTensor)
-        labels = labels.type(torch.FloatTensor)
-
-        # wrap them in Variable
+    # ------- 3.5 load pretrained weights (finetune) --------
+    pretrained_model_path = os.path.join(os.getcwd(), 'saved_models', 'u2net', 'u2net.pth')
+    if os.path.exists(pretrained_model_path):
+        print(f"Loading pretrained model from: {pretrained_model_path}")
         if torch.cuda.is_available():
-            inputs_v, labels_v = Variable(inputs.cuda(), requires_grad=False), Variable(labels.cuda(),
-                                                                                        requires_grad=False)
+            net.load_state_dict(torch.load(pretrained_model_path))
         else:
-            inputs_v, labels_v = Variable(inputs, requires_grad=False), Variable(labels, requires_grad=False)
+            net.load_state_dict(torch.load(pretrained_model_path, map_location='cpu'))
+        print("Pretrained model loaded successfully!")
+    else:
+        print(f"No pretrained model found at {pretrained_model_path}, training from scratch...")
 
-        # y zero the parameter gradients
-        optimizer.zero_grad()
+    # ------- 4. define optimizer --------
+    print("---define optimizer...")
+    optimizer = optim.Adam(net.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)  # finetune用更小的学习率
 
-        # forward + backward + optimize
-        d0, d1, d2, d3, d4, d5, d6 = net(inputs_v)
-        loss2, loss = muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v)
+    # ------- 5. training process --------
+    print("---start training...")
+    ite_num = 0
+    running_loss = 0.0
+    running_tar_loss = 0.0
+    ite_num4val = 0
+    # save_frq 已在前面根据 save_every_n_epochs 自动计算
 
-        loss.backward()
-        optimizer.step()
+    for epoch in range(0, epoch_num):
+        net.train()
 
-        # # print statistics
-        running_loss += loss.data.item()
-        running_tar_loss += loss2.data.item()
+        for i, data in enumerate(salobj_dataloader):
+            ite_num = ite_num + 1
+            ite_num4val = ite_num4val + 1
 
-        # del temporary outputs and loss
-        del d0, d1, d2, d3, d4, d5, d6, loss2, loss
+            inputs, labels = data['image'], data['label']
 
-        print("[epoch: %3d/%3d, batch: %5d/%5d, ite: %d] train loss: %3f, tar: %3f " % (
-        epoch + 1, epoch_num, (i + 1) * batch_size_train, train_num, ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
+            inputs = inputs.type(torch.FloatTensor)
+            labels = labels.type(torch.FloatTensor)
 
-        if ite_num % save_frq == 0:
+            # wrap them in Variable
+            if torch.cuda.is_available():
+                inputs_v, labels_v = Variable(inputs.cuda(), requires_grad=False), Variable(labels.cuda(),
+                                                                                            requires_grad=False)
+            else:
+                inputs_v, labels_v = Variable(inputs, requires_grad=False), Variable(labels, requires_grad=False)
 
-            torch.save(net.state_dict(), model_dir + model_name+"_bce_itr_%d_train_%3f_tar_%3f.pth" % (ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
-            running_loss = 0.0
-            running_tar_loss = 0.0
-            net.train()  # resume train
-            ite_num4val = 0
+            # y zero the parameter gradients
+            optimizer.zero_grad()
 
+            # forward + backward + optimize
+            d0, d1, d2, d3, d4, d5, d6 = net(inputs_v)
+            loss2, loss = muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v)
+
+            loss.backward()
+            optimizer.step()
+
+            # # print statistics
+            running_loss += loss.data.item()
+            running_tar_loss += loss2.data.item()
+
+            # del temporary outputs and loss
+            del d0, d1, d2, d3, d4, d5, d6, loss2, loss
+
+            print("[epoch: %3d/%3d, batch: %5d/%5d, ite: %d] train loss: %3f, tar: %3f " % (
+            epoch + 1, epoch_num, (i + 1) * batch_size_train, train_num, ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
+
+            if ite_num % save_frq == 0:
+
+                torch.save(net.state_dict(), model_dir + model_name+"_bce_itr_%d_train_%3f_tar_%3f.pth" % (ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
+                running_loss = 0.0
+                running_tar_loss = 0.0
+                net.train()  # resume train
+                ite_num4val = 0

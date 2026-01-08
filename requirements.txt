@@ -4,6 +4,6 @@ torch
 torchvision
 pillow==8.1.1
 opencv-python
-paddlepaddle
-paddlehub
-gradio
+# paddlepaddle
+# paddlehub
+# gradio
