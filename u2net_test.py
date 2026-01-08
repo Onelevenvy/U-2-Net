@@ -52,18 +52,21 @@ def save_output(image_name,pred,d_dir):
     imo.save(d_dir+imidx+'.png')
 
 def main():
-
     # --------- 1. get image path and name ---------
     model_name='u2net'#u2netp
 
+    # ======= 用户配置 =======
+    # 测试图片目录
+    image_dir = r'\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹'
+    # 输出结果目录
+    prediction_dir = os.path.join(os.getcwd(), 'test_data', 'daowen_results' + os.sep)
+    # 训练好的模型路径
+    model_dir = r'F:\New_SourceCode\U-2-Net\saved_models\u2net\u2net_bce_itr_650_train_3.257268_tar_0.411805.pth'
+    # =======================
 
-
-    image_dir = os.path.join(os.getcwd(), 'test_data', 'test_images')
-    prediction_dir = os.path.join(os.getcwd(), 'test_data', model_name + '_results' + os.sep)
-    model_dir = os.path.join(os.getcwd(), 'saved_models', model_name, model_name + '.pth')
-
-    img_name_list = glob.glob(image_dir + os.sep + '*')
-    print(img_name_list)
+    img_name_list = glob.glob(image_dir + os.sep + '*.jpg')  # 只匹配jpg图片
+    print(f"Found {len(img_name_list)} test images")
+    print(img_name_list[:5])  # 只打印前5个
 
     # --------- 2. dataloader ---------
     #1. dataloader
@@ -75,7 +78,7 @@ def main():
     test_salobj_dataloader = DataLoader(test_salobj_dataset,
                                         batch_size=1,
                                         shuffle=False,
-                                        num_workers=1)
+                                        num_workers=0)  # Windows上用0避免多进程问题
 
     # --------- 3. model define ---------
     if(model_name=='u2net'):

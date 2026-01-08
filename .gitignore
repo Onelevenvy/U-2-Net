@@ -1,3 +1,5 @@
 train_data/*
 saved_models/*
 __pycache__
+test_data/u2net_results/*
+test_data/daowen_results/*
