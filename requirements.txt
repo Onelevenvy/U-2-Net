@@ -4,6 +4,8 @@ torch
 torchvision
 pillow==8.1.1
 opencv-python
+tensorboard  # 训练可视化 (必须)
+# wandb     # 更强大的可视化工具 (可选，取消注释启用)
 # paddlepaddle
 # paddlehub
 # gradio

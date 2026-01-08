@@ -61,7 +61,7 @@ def main():
     # 输出结果目录
     prediction_dir = os.path.join(os.getcwd(), 'test_data', 'daowen_results' + os.sep)
     # 训练好的模型路径
-    model_dir = r'F:\New_SourceCode\U-2-Net\saved_models\u2net\u2net_bce_itr_650_train_3.257268_tar_0.411805.pth'
+    model_dir = r'F:\New_SourceCode\U-2-Net\saved_models\u2net\1.pth'
     # =======================
 
     img_name_list = glob.glob(image_dir + os.sep + '*.jpg')  # 只匹配jpg图片
