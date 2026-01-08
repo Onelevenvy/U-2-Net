@@ -54,8 +54,8 @@ label_ext = '.png'
 model_dir = os.path.join(os.getcwd(), 'saved_models', model_name + os.sep)
 
 # ======= 用户可调参数 =======
-epoch_num = 50  # 淡缺陷需要更多轮次，建议50-100
-save_every_n_epochs = 10  # 每隔几个epoch保存一次模型
+epoch_num = 12  # 淡缺陷需要更多轮次，建议50-100
+save_every_n_epochs = 3  # 每隔几个epoch保存一次模型
 batch_size_train = 8  # 根据显存调整，如果OOM可以改小
 # ============================
 
