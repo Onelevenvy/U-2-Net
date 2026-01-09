@@ -79,7 +79,7 @@ MODEL_SAVE_DIR = os.path.join(PROJECT_DIR, "models")
 TENSORBOARD_LOG_DIR = os.path.join(PROJECT_DIR, "runs")
 
 # 预训练权重路径
-PRETRAINED_PATH = os.path.join(os.getcwd(),  "pretrain", f"{MODEL_NAME}.pth")
+PRETRAINED_PATH = os.path.join(os.getcwd(), "pretrain", f"{MODEL_NAME}.pth")
 
 # =====================================================================
 #                           Labelme 转换函数
@@ -338,6 +338,26 @@ def train():
     logger.info(f"模型保存目录: {MODEL_SAVE_DIR}")
     logger.info("=" * 60)
     
+    # ======= 训练开始时保存配置文件 =======
+    config_path = os.path.join(MODEL_SAVE_DIR, "config.json")
+    config = {
+        "project_name": PROJECT_NAME,
+        "model_name": MODEL_NAME,
+        "input_size": list(INPUT_SIZE),  # (H, W)
+        "num_classes": 1,
+        "use_clahe": True,
+        "batch_size": BATCH_SIZE,
+        "learning_rate": LEARNING_RATE,
+        "total_epochs": EPOCH_NUM,
+        "best_model": None,  # 还没有保存的模型
+        "last_saved_epoch": 0,
+        "train_time_seconds": 0,
+        "train_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+    logger.info(f"配置文件已创建: {config_path}")
+    
     total_start_time = time.time()
     epoch_times = []
     
@@ -423,10 +443,24 @@ def train():
             save_path = os.path.join(MODEL_SAVE_DIR, f"{MODEL_NAME}_epoch_{epoch+1}.pth")
             torch.save(net.state_dict(), save_path)
             logger.info(f"模型已保存: {save_path}")
+            
+            # 更新配置文件
+            config["best_model"] = f"{MODEL_NAME}_epoch_{epoch+1}.pth"
+            config["last_saved_epoch"] = epoch + 1
+            config["train_time_seconds"] = time.time() - total_start_time
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
 
     # 训练结束
     total_end_time = time.time()
     total_duration = total_end_time - total_start_time
+    
+    # ======= 更新最终配置 =======
+    config["train_time_seconds"] = total_duration
+    config["train_date"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+    logger.info(f"配置文件已更新: {config_path}")
     
     logger.info("")
     logger.info("=" * 60)
