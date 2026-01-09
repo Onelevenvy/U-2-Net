@@ -3,6 +3,7 @@ U2NetP 推理脚本 - 适配工业质检 (长方形输入 + CLAHE增强)
 """
 
 import os
+import json
 import cv2
 import torch
 import numpy as np
@@ -10,8 +11,8 @@ from model import U2NETP  # 必须用 U2NETP
 
 # ======= 用户配置 =======
 # 1. 测试图片目录
-IMAGE_DIR = r"F:\DL项目测试\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
-# IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\1_train\100pcs"
+# IMAGE_DIR = r"F:\DL项目测试\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
+IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\1_train\100pcs"
 
 # 2. 训练好的模型路径 (确保是 u2netp 的权重)
 MODEL_PATH = r"F:\New_SourceCode\U-2-Net\saved_models\u2netp\u2netp_epoch_300.pth"
@@ -146,9 +147,88 @@ def predict(net, img_tensor):
     return pred.cpu().numpy().squeeze()  # (H, W)
 
 
-def overlay_result(original_img, pred_mask, output_path):
+def draw_labelme_annotations(img, json_path):
+    """
+    在图像上绘制 labelme 格式的标注
+    支持: polygon, rectangle, circle, line, point
+    """
+    if not os.path.exists(json_path):
+        return img
+    
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"读取JSON失败: {json_path}, 错误: {e}")
+        return img
+    
+    img_draw = img.copy()
+    shapes = data.get('shapes', [])
+    
+    # 标注颜色 (BGR) - 绿色
+    ANNOTATION_COLOR = (0, 255, 0)
+    LINE_THICKNESS = 2
+    
+    for shape in shapes:
+        shape_type = shape.get('shape_type', '')
+        points = shape.get('points', [])
+        label = shape.get('label', '')
+        
+        if not points:
+            continue
+        
+        # 转换为整数点
+        pts = np.array(points, dtype=np.int32)
+        
+        if shape_type == 'polygon':
+            # 多边形: 绘制闭合轮廓
+            cv2.polylines(img_draw, [pts], isClosed=True, color=ANNOTATION_COLOR, thickness=LINE_THICKNESS)
+        
+        elif shape_type == 'rectangle':
+            # 矩形: 两点 (左上, 右下)
+            if len(pts) >= 2:
+                pt1 = tuple(pts[0])
+                pt2 = tuple(pts[1])
+                cv2.rectangle(img_draw, pt1, pt2, color=ANNOTATION_COLOR, thickness=LINE_THICKNESS)
+        
+        elif shape_type == 'circle':
+            # 圆形: 两点 (圆心, 边缘点)
+            if len(pts) >= 2:
+                center = tuple(pts[0])
+                edge = pts[1]
+                radius = int(np.linalg.norm(pts[0] - edge))
+                cv2.circle(img_draw, center, radius, color=ANNOTATION_COLOR, thickness=LINE_THICKNESS)
+        
+        elif shape_type == 'line':
+            # 线段: 两点
+            if len(pts) >= 2:
+                pt1 = tuple(pts[0])
+                pt2 = tuple(pts[1])
+                cv2.line(img_draw, pt1, pt2, color=ANNOTATION_COLOR, thickness=LINE_THICKNESS)
+        
+        elif shape_type == 'point':
+            # 点: 单点
+            if len(pts) >= 1:
+                pt = tuple(pts[0])
+                cv2.circle(img_draw, pt, radius=5, color=ANNOTATION_COLOR, thickness=-1)  # 实心圆
+        
+        elif shape_type == 'linestrip':
+            # 折线: 多点连线
+            cv2.polylines(img_draw, [pts], isClosed=False, color=ANNOTATION_COLOR, thickness=LINE_THICKNESS)
+        
+        # 绘制标签文字 (在第一个点旁边)
+        if label and len(pts) >= 1:
+            text_pos = (int(pts[0][0]), int(pts[0][1]) - 5)
+            cv2.putText(img_draw, label, text_pos, cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.5, ANNOTATION_COLOR, 1, cv2.LINE_AA)
+    
+    return img_draw
+
+
+def overlay_result(original_img, pred_mask, output_path, img_path=None):
     """
     将预测结果叠加回原图
+    img_path: 原始图片路径，用于查找同名json标注文件
     """
     h, w = original_img.shape[:2]
 
@@ -174,11 +254,20 @@ def overlay_result(original_img, pred_mask, output_path):
     overlay = original_img * (1 - alpha) + heatmap * alpha
     overlay = overlay.astype(np.uint8)
 
-    # 5. 另外保存一张纯 Mask 对比
-    mask_uint8 = (mask_resized * 255).astype(np.uint8)
+    # 5. 准备原图用于拼接（带labelme标注）
+    original_with_annotation = original_img.copy()
+    
+    # 检查是否有同名json文件
+    if img_path:
+        # 获取不带后缀的文件路径
+        base_path = os.path.splitext(img_path)[0]
+        json_path = base_path + '.json'
+        
+        # 绘制labelme标注
+        original_with_annotation = draw_labelme_annotations(original_with_annotation, json_path)
 
-    # 拼接显示: 上面是原图叠加，下面是纯Mask
-    combined = np.vstack([overlay, cv2.cvtColor(mask_uint8, cv2.COLOR_GRAY2BGR)])
+    # 拼接显示: 上面是原图叠加热力图，下面是原图(带标注)
+    combined = np.vstack([overlay, original_with_annotation])
 
     cv2.imwrite(output_path, combined)
 
@@ -223,7 +312,7 @@ def main():
 
         # 5. 保存结果
         save_path = os.path.join(OUTPUT_DIR, fname)
-        overlay_result(orig_img_bgr, pred_mask, save_path)
+        overlay_result(orig_img_bgr, pred_mask, save_path, img_path)
 
     print("Test finished!")
 
