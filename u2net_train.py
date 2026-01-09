@@ -137,6 +137,7 @@ def main():
         net.train()
         epoch_start_time = time.time()  # 记录当前epoch开始时间
         epoch_loss = 0.0
+        epoch_target_loss = 0.0  # 新增：累计 target loss
         epoch_batches = 0
 
         for i, data in enumerate(salobj_dataloader):
@@ -162,8 +163,10 @@ def main():
             optimizer.step()
 
             current_loss = loss.item()
+            current_target_loss = loss2.item()  # 新增
             running_loss += current_loss
             epoch_loss += current_loss
+            epoch_target_loss += current_target_loss  # 新增
             epoch_batches += 1
 
             # ======= 记录每次迭代的loss到TensorBoard =======
@@ -185,10 +188,12 @@ def main():
         
         # 计算epoch平均loss
         avg_epoch_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
+        avg_epoch_target_loss = epoch_target_loss / epoch_batches if epoch_batches > 0 else 0  # 新增
         
         # ======= 记录每个epoch的信息到TensorBoard =======
         if writer is not None:
             writer.add_scalar('Loss/train_epoch', avg_epoch_loss, epoch + 1)
+            writer.add_scalar('Loss/target_epoch', avg_epoch_target_loss, epoch + 1)  # 新增
             writer.add_scalar('Time/epoch_seconds', epoch_duration, epoch + 1)
             writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch + 1)
         # ================================================
