@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.cuda.amp import autocast, GradScaler  # AMP 混合精度
+import torch.backends.cudnn as cudnn
 from torchvision import transforms
 import glob
 from datetime import datetime
@@ -12,6 +14,10 @@ from loguru import logger
 from data_loader import RescaleT, CLAHE_Transform, ToTensorLab, SalObjDataset
 from model import U2NET, U2NETP
 from losses import FaintDefectLoss, muti_loss_fusion
+
+# ======= 性能优化配置 =======
+cudnn.benchmark = True  # 固定尺寸输入时，cudnn会自动选择最优算法
+cudnn.deterministic = False  # 允许非确定性算法以获得更好性能
 
 # ======= TensorBoard 配置 =======
 TENSORBOARD_LOG_DIR = os.path.join(os.getcwd(), 'runs')
@@ -28,7 +34,7 @@ except ImportError:
 # ======= 核心参数配置 =======
 model_name = "u2netp"  # 强烈建议先用 lite 版 (u2netp)
 # model_name = "u2net" 
-batch_size_train = 8
+batch_size_train = 16
 epoch_num = 200  # 有预训练权重的话，200够了
 learning_rate = 1e-3  # AdamW 初始学习率
 
@@ -72,18 +78,33 @@ def main():
         ),
     )
 
+    # ======= DataLoader 性能优化 =======
+    # num_workers: Windows建议4-8, Linux可以8-16
+    # pin_memory: GPU训练必开，加速Host->Device传输
+    # persistent_workers: 避免每个epoch重新创建worker进程
+    # prefetch_factor: 每个worker预取的batch数
+    num_workers = 4  # Windows推荐值
     salobj_dataloader = DataLoader(
-        salobj_dataset, batch_size=batch_size_train, shuffle=True, num_workers=0
+        salobj_dataset, 
+        batch_size=batch_size_train, 
+        shuffle=True, 
+        num_workers=num_workers,
+        pin_memory=True,  # 关键！加速GPU数据传输
+        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
+        drop_last=True  # 避免最后一个小batch影响BN
     )
+    logger.info(f"DataLoader: num_workers={num_workers}, pin_memory=True, prefetch_factor=2")
 
     # 3. 定义模型
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if model_name == "u2net":
         net = U2NET(3, 1)
     elif model_name == "u2netp":
         net = U2NETP(3, 1)
 
-    if torch.cuda.is_available():
-        net.cuda()
+    net = net.to(device)
+    logger.info(f"Model loaded on device: {device}")
 
     # 4. 加载预训练权重 (必须做!)
     pretrained_path = os.path.join(
@@ -125,6 +146,14 @@ def main():
         logger.info(f"启动 TensorBoard 命令: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
     # ===================================
 
+    # ======= 混合精度训练 (AMP) 配置 =======
+    use_amp = torch.cuda.is_available()  # 有GPU就启用AMP
+    scaler = GradScaler(enabled=use_amp)
+    # device 已在模型加载时定义
+    if use_amp:
+        logger.info("✅ 混合精度训练 (AMP) 已启用 - 预计提速 50-100%")
+    # =====================================
+
     # 7. 训练循环
     ite_num = 0
     running_loss = 0.0
@@ -146,23 +175,26 @@ def main():
             ite_num += 1
             inputs, labels = data["image"], data["label"]
 
-            if torch.cuda.is_available():
-                inputs = inputs.cuda()
-                labels = labels.cuda()
+            # 使用 non_blocking=True 异步传输，配合 pin_memory
+            inputs = inputs.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
-            optimizer.zero_grad()
+            # set_to_none=True 比 zero_grad() 更高效
+            optimizer.zero_grad(set_to_none=True)
 
-            # Forward
-            d0, d1, d2, d3, d4, d5, d6 = net(inputs)
+            # ======= AMP 混合精度前向传播 =======
+            with autocast(enabled=use_amp):
+                d0, d1, d2, d3, d4, d5, d6 = net(inputs)
+                loss2, loss = muti_loss_fusion(
+                    criterion, d0, d1, d2, d3, d4, d5, d6, labels
+                )
+            # ====================================
 
-            # Loss
-            loss2, loss = muti_loss_fusion(
-                criterion, d0, d1, d2, d3, d4, d5, d6, labels
-            )
-
-            # Backward
-            loss.backward()
-            optimizer.step()
+            # ======= AMP 混合精度反向传播 =======
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            # ====================================
 
             current_loss = loss.item()
             current_target_loss = loss2.item()  # 新增

@@ -116,30 +116,36 @@ class SalObjDataset(Dataset):
         return len(self.image_name_list)
 
     def __getitem__(self, idx):
-        # 读取图片
-        image = io.imread(self.image_name_list[idx])
+        # 读取图片 - 使用 cv2 比 skimage.io 快 2-3 倍
+        image = cv2.imread(self.image_name_list[idx], cv2.IMREAD_COLOR)
+        if image is None:
+            # 回退到 skimage
+            image = io.imread(self.image_name_list[idx])
+        else:
+            # cv2 读取的是 BGR，需要转成 RGB
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
         imidx = np.array([idx])
 
         # 读取 Label
         if 0 == len(self.label_name_list):
-            label = np.zeros(image.shape[0:2])
+            label = np.zeros(image.shape[0:2], dtype=np.uint8)
         else:
-            label_3 = io.imread(self.label_name_list[idx])
-            # 处理 Label 维度
-            if len(label_3.shape) == 3:
-                label = label_3[:, :, 0]
-            else:
-                label = label_3
+            # 使用 cv2 读取灰度图
+            label = cv2.imread(self.label_name_list[idx], cv2.IMREAD_GRAYSCALE)
+            if label is None:
+                # 回退到 skimage
+                label_3 = io.imread(self.label_name_list[idx])
+                if len(label_3.shape) == 3:
+                    label = label_3[:, :, 0]
+                else:
+                    label = label_3
 
         # 确保 image 是 3 通道 (H, W, 3)
         if len(image.shape) == 2:
-            image = image[:, :, np.newaxis]
-            image = np.repeat(image, 3, axis=2)
-        elif image.shape[2] == 4: # 去掉 Alpha 通道
+            image = np.stack([image, image, image], axis=2)
+        elif image.shape[2] == 4:  # 去掉 Alpha 通道
             image = image[:, :, :3]
-
-        # 确保 label 是 2 维 (H, W) 用于 transform 内部处理
-        # Transform 之后会被 ToTensorLab 变成 (1, H, W)
 
         sample = {'imidx': imidx, 'image': image, 'label': label}
 
