@@ -4,140 +4,135 @@ import torch.nn.functional as F
 
 
 # =====================================================================
-#                    二值分割损失函数 (num_classes=1)
+#                    统一分割损失函数 (自动适配二值/多类别)
 # =====================================================================
 
-class FaintDefectLoss(nn.Module):
+class OptimizedSegLoss(nn.Module):
     """
-    针对淡缺陷优化的二值分割损失函数
-    使用 Tversky + Focal Loss 组合
+    统一的分割损失函数，适用于二值分割和多类别分割
+    使用 Tversky + Focal Loss 组合，针对淡缺陷和小目标优化
+    
+    Args:
+        num_classes: 类别数
+            - 1: 二值分割，输入为 sigmoid 概率 [B, 1, H, W]
+            - >1: 多类别分割，输入为 softmax 概率 [B, C, H, W]
+        class_weights: 各类别权重 (可选)，用于处理类别不平衡
+        alpha: Tversky 中 FP 的权重 (默认0.3)
+        beta: Tversky 中 FN 的权重 (默认0.7，强调召回减少漏检)
+        gamma: Focal Loss 的聚焦因子 (默认2.0)
+        tversky_weight: Tversky Loss 权重 (默认0.7)
+        focal_weight: Focal Loss 权重 (默认0.3)
     """
-    def __init__(self, alpha=0.3, beta=0.7, gamma=2.0):
-        super(FaintDefectLoss, self).__init__()
-        # beta=0.7 意味着漏检(FN)的惩罚是误检(FP)的2倍多
-        self.alpha = alpha 
+    def __init__(self, num_classes=1, class_weights=None, alpha=0.3, beta=0.7, gamma=2.0,
+                 tversky_weight=0.7, focal_weight=0.3):
+        super(OptimizedSegLoss, self).__init__()
+        self.num_classes = num_classes
+        self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-
-    def forward(self, pred, target):
-        # pred: [B, 1, H, W] - 模型输出已经 sigmoid 过了
-        # target: [B, 1, H, W]
+        self.tversky_weight = tversky_weight
+        self.focal_weight = focal_weight
         
-        # 强制 clamp 到安全范围，避免 BCE 的 log(0) 问题
+        # 类别权重 (用于 Focal Loss)
+        if class_weights is not None:
+            self.register_buffer('class_weights', torch.tensor(class_weights, dtype=torch.float32))
+        else:
+            self.class_weights = None
+    
+    def forward(self, pred, target):
+        """
+        pred: 
+            - 二值: [B, 1, H, W] sigmoid 概率
+            - 多类: [B, C, H, W] softmax 概率
+        target:
+            - 二值: [B, 1, H, W] 0/1 标签
+            - 多类: [B, 1, H, W] 或 [B, H, W] 类别索引
+        """
+        if self.num_classes == 1:
+            return self._binary_loss(pred, target)
+        else:
+            return self._multiclass_loss(pred, target)
+    
+    def _binary_loss(self, pred, target):
+        """二值分割损失"""
         eps = 1e-6
         pred = torch.clamp(pred, min=eps, max=1.0 - eps)
         
-        # 1. Tversky Loss (专门解决极小目标梯度消失)
+        # Tversky Loss
         smooth = 1.0
         pred_flat = pred.view(-1)
         target_flat = target.view(-1)
         
-        # True Positives, False Positives, False Negatives
         TP = (pred_flat * target_flat).sum()
         FP = ((1 - target_flat) * pred_flat).sum()
         FN = (target_flat * (1 - pred_flat)).sum()
         
-        Tversky = (TP + smooth) / (TP + self.alpha * FP + self.beta * FN + smooth)
-        tversky_loss = 1 - Tversky
+        tversky = (TP + smooth) / (TP + self.alpha * FP + self.beta * FN + smooth)
+        tversky_loss = 1 - tversky
 
-        # 2. Focal Loss (解决淡缺陷难分问题)
+        # Focal Loss
         bce = -(target * torch.log(pred) + (1 - target) * torch.log(1 - pred))
-        
-        # 计算 focal 权重: (1-pt)^gamma
         pt = torch.where(target == 1, pred, 1 - pred)
         focal_weight = (1 - pt) ** self.gamma
-        
         focal_loss = (focal_weight * bce).mean()
         
-        # 3. 组合: Tversky 负责轮廓召回，Focal 负责像素分类
-        total_loss = 0.7 * tversky_loss + 0.3 * focal_loss
-        
-        return total_loss
-
-
-# =====================================================================
-#                    多类别分割损失函数 (num_classes>1)
-# =====================================================================
-
-class MultiClassLoss(nn.Module):
-    """
-    多类别分割损失函数
-    使用 CrossEntropy + Dice Loss 组合
+        return self.tversky_weight * tversky_loss + self.focal_weight * focal_loss
     
-    Args:
-        num_classes: 类别数 (包含背景)
-        class_weights: 各类别权重 (可选)，用于处理类别不平衡
-        dice_weight: Dice Loss 权重 (默认0.5)
-        ce_weight: CrossEntropy 权重 (默认0.5)
-        ignore_index: 忽略的标签索引 (默认-100)
-    """
-    def __init__(self, num_classes, class_weights=None, dice_weight=0.5, ce_weight=0.5, ignore_index=-100):
-        super(MultiClassLoss, self).__init__()
-        self.num_classes = num_classes
-        self.dice_weight = dice_weight
-        self.ce_weight = ce_weight
-        self.ignore_index = ignore_index
-        
-        # CrossEntropy Loss
-        if class_weights is not None:
-            class_weights = torch.tensor(class_weights, dtype=torch.float32)
-            self.ce_loss = nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
-        else:
-            self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
-        
-    def dice_loss(self, pred, target):
-        """
-        计算多类别 Dice Loss
-        pred: [B, C, H, W] softmax 后的概率图
-        target: [B, H, W] 类别索引图
-        """
-        smooth = 1.0
-        
-        # one-hot 编码 target: [B, H, W] -> [B, C, H, W]
-        target_one_hot = F.one_hot(target.long(), self.num_classes)  # [B, H, W, C]
-        target_one_hot = target_one_hot.permute(0, 3, 1, 2).float()  # [B, C, H, W]
-        
-        # 计算每个类别的 Dice
-        dice_per_class = []
-        for c in range(self.num_classes):
-            pred_c = pred[:, c, :, :]
-            target_c = target_one_hot[:, c, :, :]
-            
-            intersection = (pred_c * target_c).sum()
-            union = pred_c.sum() + target_c.sum()
-            
-            dice = (2.0 * intersection + smooth) / (union + smooth)
-            dice_per_class.append(dice)
-        
-        # 平均 Dice Loss
-        mean_dice = sum(dice_per_class) / len(dice_per_class)
-        return 1.0 - mean_dice
-    
-    def forward(self, pred, target):
-        """
-        pred: [B, C, H, W] - softmax 后的概率图
-        target: [B, 1, H, W] 或 [B, H, W] - 类别索引图 (0, 1, 2, ...)
-        """
+    def _multiclass_loss(self, pred, target):
+        """多类别分割损失"""
         # 处理 target 维度
         if target.dim() == 4:
-            target = target.squeeze(1)  # [B, 1, H, W] -> [B, H, W]
+            target = target.squeeze(1)
         target = target.long()
         
-        # 1. CrossEntropy Loss
-        # CrossEntropyLoss 需要 pred 是 logits，但我们的输入已经是 softmax 后的
-        # 所以需要转回 logits (取 log)
         eps = 1e-6
-        pred_clamped = torch.clamp(pred, min=eps, max=1.0 - eps)
-        logits = torch.log(pred_clamped)
-        ce = self.ce_loss(logits, target)
+        pred = torch.clamp(pred, min=eps, max=1.0 - eps)
         
-        # 2. Dice Loss
-        dice = self.dice_loss(pred, target)
+        # one-hot 编码
+        target_one_hot = F.one_hot(target, self.num_classes).permute(0, 3, 1, 2).float()
         
-        # 3. 组合
-        total_loss = self.ce_weight * ce + self.dice_weight * dice
+        # Tversky Loss (只计算前景类，跳过背景 class 0)
+        smooth = 1.0
+        tversky_per_class = []
+        for c in range(1, self.num_classes):
+            pred_c = pred[:, c, :, :].contiguous().view(-1)
+            target_c = target_one_hot[:, c, :, :].contiguous().view(-1)
+            
+            TP = (pred_c * target_c).sum()
+            FP = ((1 - target_c) * pred_c).sum()
+            FN = (target_c * (1 - pred_c)).sum()
+            
+            tversky = (TP + smooth) / (TP + self.alpha * FP + self.beta * FN + smooth)
+            tversky_per_class.append(tversky)
         
-        return total_loss
+        if len(tversky_per_class) > 0:
+            tversky_loss = 1.0 - sum(tversky_per_class) / len(tversky_per_class)
+        else:
+            tversky_loss = torch.tensor(0.0, device=pred.device)
+        
+        # Focal Loss
+        pt = pred.gather(1, target.unsqueeze(1)).squeeze(1)
+        focal_weight = (1 - pt) ** self.gamma
+        log_pt = torch.log(pt)
+        
+        if self.class_weights is not None:
+            pixel_weights = self.class_weights[target]
+            focal_loss = (-focal_weight * log_pt * pixel_weights).mean()
+        else:
+            focal_loss = (-focal_weight * log_pt).mean()
+        
+        return self.tversky_weight * tversky_loss + self.focal_weight * focal_loss
+
+
+# =====================================================================
+#                    保留旧类名作为别名 (向后兼容)
+# =====================================================================
+
+# 二值分割别名
+FaintDefectLoss = OptimizedSegLoss
+
+# 多类别分割别名
+MultiClassLoss = OptimizedSegLoss
 
 
 # =====================================================================
@@ -164,16 +159,13 @@ def muti_loss_fusion(criterion, d0, d1, d2, d3, d4, d5, d6, labels_v):
 
 def get_loss_function(num_classes, class_weights=None):
     """
-    根据类别数自动选择损失函数
+    根据类别数创建统一损失函数
     
     Args:
-        num_classes: 类别数
-        class_weights: 类别权重 (仅多类别时有效)
+        num_classes: 类别数 (1=二值分割, >1=多类别分割)
+        class_weights: 类别权重 (可选，用于处理类别不平衡)
     
     Returns:
-        criterion: 损失函数实例
+        criterion: OptimizedSegLoss 实例
     """
-    if num_classes == 1:
-        return FaintDefectLoss(alpha=0.3, beta=0.7, gamma=2.0)
-    else:
-        return MultiClassLoss(num_classes=num_classes, class_weights=class_weights)
+    return OptimizedSegLoss(num_classes=num_classes, class_weights=class_weights)

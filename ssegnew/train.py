@@ -30,7 +30,7 @@ from loguru import logger
 
 from data_loader import RescaleT, CLAHE_Transform, ToTensorLab, SalObjDataset
 from model import U2NET, U2NETP
-from losses import FaintDefectLoss, MultiClassLoss, muti_loss_fusion, get_loss_function
+from losses import muti_loss_fusion, get_loss_function
 
 
 cudnn.benchmark = True
