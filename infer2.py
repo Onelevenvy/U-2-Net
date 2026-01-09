@@ -10,8 +10,8 @@ from model import U2NETP  # 必须用 U2NETP
 
 # ======= 用户配置 =======
 # 1. 测试图片目录
-IMAGE_DIR = r"F:\DL项目测试\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
-# IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\1_train\100pcs"
+# IMAGE_DIR = r"F:\DL项目测试\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
+IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\1_train\100pcs"
 
 # 2. 训练好的模型路径 (确保是 u2netp 的权重)
 MODEL_PATH = r"F:\New_SourceCode\U-2-Net\saved_models\u2netp\u2netp_epoch_200.pth"

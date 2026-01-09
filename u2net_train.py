@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler  # AMP 混合精度
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 import torch.backends.cudnn as cudnn
 from torchvision import transforms
 import glob
@@ -15,32 +15,26 @@ from data_loader import RescaleT, CLAHE_Transform, ToTensorLab, SalObjDataset
 from model import U2NET, U2NETP
 from losses import FaintDefectLoss, muti_loss_fusion
 
-# ======= 性能优化配置 =======
+# ======= 性能优化配置 (安全的加速) =======
 cudnn.benchmark = True  # 固定尺寸输入时，cudnn会自动选择最优算法
-cudnn.deterministic = False  # 允许非确定性算法以获得更好性能
 
 # ======= TensorBoard 配置 =======
 TENSORBOARD_LOG_DIR = os.path.join(os.getcwd(), 'runs')
 
-# TensorBoard 导入
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_AVAILABLE = True
 except ImportError:
     TENSORBOARD_AVAILABLE = False
     logger.warning("TensorBoard not available. Install with: pip install tensorboard")
-# ================================
 
 # ======= 核心参数配置 =======
 model_name = "u2netp"  # 强烈建议先用 lite 版 (u2netp)
-# model_name = "u2net" 
-batch_size_train = 16
-epoch_num = 200  # 有预训练权重的话，200够了
-learning_rate = 1e-3  # AdamW 初始学习率
+batch_size_train = 8
+epoch_num = 300
+learning_rate = 1e-3  # 初始学习率
 
 # 【关键】输入尺寸设置：(Height, Width)
-# 你的原图是 2000x480 (W x H)
-# 为了不压扁缺陷，我们设置一个接近 1:3 或 1:4 的矩形输入
 input_size = (224, 512)
 
 data_dir = os.path.join(os.getcwd(), "train_data", "daowenb402" + os.sep)
@@ -65,36 +59,31 @@ def main():
     logger.info(f"Train images: {len(tra_img_name_list)}")
 
     # 2. 定义 DataLoader
-    # 注意 transforms 的顺序：Rescale(矩形) -> CLAHE(增强) -> ToTensor
     salobj_dataset = SalObjDataset(
         img_name_list=tra_img_name_list,
         lbl_name_list=tra_lbl_name_list,
         transform=transforms.Compose(
             [
-                RescaleT(input_size),  # 使用矩形尺寸 (320, 1024)
-                # CLAHE_Transform(),  # 物理增强淡缺陷
+                RescaleT(input_size),
+              
                 ToTensorLab(flag=0),
             ]
         ),
     )
 
-    # ======= DataLoader 性能优化 =======
-    # num_workers: Windows建议4-8, Linux可以8-16
-    # pin_memory: GPU训练必开，加速Host->Device传输
-    # persistent_workers: 避免每个epoch重新创建worker进程
-    # prefetch_factor: 每个worker预取的batch数
-    num_workers = 4  # Windows推荐值
+    # ======= DataLoader 加速 (安全的) =======
+    # Windows 上 num_workers > 0 可能有问题，如果报错就改回 0
+    num_workers = 4
     salobj_dataloader = DataLoader(
         salobj_dataset, 
         batch_size=batch_size_train, 
         shuffle=True, 
         num_workers=num_workers,
-        pin_memory=True,  # 关键！加速GPU数据传输
+        pin_memory=True,  # 加速 CPU->GPU 传输
         persistent_workers=True if num_workers > 0 else False,
-        prefetch_factor=2 if num_workers > 0 else None,
-        drop_last=True  # 避免最后一个小batch影响BN
+        drop_last=True
     )
-    logger.info(f"DataLoader: num_workers={num_workers}, pin_memory=True, prefetch_factor=2")
+    logger.info(f"DataLoader: batch_size={batch_size_train}, num_workers={num_workers}")
 
     # 3. 定义模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -106,17 +95,16 @@ def main():
     net = net.to(device)
     logger.info(f"Model loaded on device: {device}")
 
-    # 4. 加载预训练权重 (必须做!)
+    # 4. 加载预训练权重
     pretrained_path = os.path.join(
-        os.getcwd(), "saved_models","pretrain", f"{model_name}.pth"
-    )  # 确保你有这个文件
+        os.getcwd(), "saved_models", "pretrain", f"{model_name}.pth"
+    )
     if os.path.exists(pretrained_path):
         logger.info(f"Loading pretrained: {pretrained_path}")
         try:
             net.load_state_dict(torch.load(pretrained_path), strict=False)
         except Exception as e:
             logger.warning(f"Pretrained load warning: {e}")
-            logger.info("Try loading strictly matching keys...")
             pretrained_dict = torch.load(pretrained_path)
             model_dict = net.state_dict()
             pretrained_dict = {
@@ -130,8 +118,13 @@ def main():
     else:
         logger.warning("No pretrained weights found! Training will be slow.")
 
-    # 5. 定义优化器 (AdamW)
+    # 5. 定义优化器 (AdamW 带权重衰减)
     optimizer = optim.AdamW(net.parameters(), lr=learning_rate, weight_decay=1e-4)
+    
+    # ======= 学习率调度器 (关键！帮助收敛) =======
+    # CosineAnnealingWarmRestarts: 周期性重启，避免陷入局部最优
+    # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=20, T_mult=2, eta_min=1e-6)
+    # logger.info("Scheduler: CosineAnnealingWarmRestarts (T_0=20, T_mult=2)")
 
     # 6. 定义 Loss
     criterion = FaintDefectLoss(alpha=0.3, beta=0.7, gamma=2.0)
@@ -144,113 +137,113 @@ def main():
         writer = SummaryWriter(log_dir=log_dir)
         logger.info(f"TensorBoard initialized! Log dir: {log_dir}")
         logger.info(f"启动 TensorBoard 命令: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
-    # ===================================
 
-    # ======= 混合精度训练 (AMP) 配置 =======
-    use_amp = torch.cuda.is_available()  # 有GPU就启用AMP
-    scaler = GradScaler(enabled=use_amp)
-    # device 已在模型加载时定义
-    if use_amp:
-        logger.info("✅ 混合精度训练 (AMP) 已启用 - 预计提速 50-100%")
-    # =====================================
-
-    # 7. 训练循环
+    # 7. 训练循环 (保持原始逻辑，不用 AMP)
     ite_num = 0
     running_loss = 0.0
+    best_loss = float('inf')
 
-    logger.info("Start Training")
+    logger.info("Start Training (FP32 模式，确保收敛)")
     
-    # 记录总训练开始时间
     total_start_time = time.time()
-    epoch_times = []  # 存储每个epoch的耗时
+    epoch_times = []
     
     for epoch in range(epoch_num):
         net.train()
-        epoch_start_time = time.time()  # 记录当前epoch开始时间
+        epoch_start_time = time.time()
         epoch_loss = 0.0
-        epoch_target_loss = 0.0  # 新增：累计 target loss
+        epoch_target_loss = 0.0
         epoch_batches = 0
 
         for i, data in enumerate(salobj_dataloader):
             ite_num += 1
             inputs, labels = data["image"], data["label"]
 
-            # 使用 non_blocking=True 异步传输，配合 pin_memory
+            # 使用 non_blocking 加速传输
             inputs = inputs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            # set_to_none=True 比 zero_grad() 更高效
-            optimizer.zero_grad(set_to_none=True)
+            # 标准训练流程 (不使用 AMP，确保收敛)
+            optimizer.zero_grad()
 
-            # ======= AMP 混合精度前向传播 =======
-            with autocast(enabled=use_amp):
-                d0, d1, d2, d3, d4, d5, d6 = net(inputs)
-                loss2, loss = muti_loss_fusion(
-                    criterion, d0, d1, d2, d3, d4, d5, d6, labels
-                )
-            # ====================================
+            # Forward
+            d0, d1, d2, d3, d4, d5, d6 = net(inputs)
 
-            # ======= AMP 混合精度反向传播 =======
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            # ====================================
+            # Loss 计算
+            loss2, loss = muti_loss_fusion(
+                criterion, d0, d1, d2, d3, d4, d5, d6, labels
+            )
+
+            # Backward (标准方式)
+            loss.backward()
+            
+            # 梯度裁剪 (宽松阈值，只防止极端情况)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=5.0)
+            
+            optimizer.step()
 
             current_loss = loss.item()
-            current_target_loss = loss2.item()  # 新增
+            current_target_loss = loss2.item()
             running_loss += current_loss
             epoch_loss += current_loss
-            epoch_target_loss += current_target_loss  # 新增
+            epoch_target_loss += current_target_loss
             epoch_batches += 1
 
-            # ======= 记录每次迭代的loss到TensorBoard =======
+            # 记录到 TensorBoard
             if writer is not None:
                 writer.add_scalar('Loss/train_iter', current_loss, ite_num)
-                writer.add_scalar('Loss/target_iter', loss2.item(), ite_num)
-            # ================================================
+                writer.add_scalar('Loss/target_iter', current_target_loss, ite_num)
 
             if ite_num % 50 == 0:
                 logger.info(
-                    f"[Epoch {epoch+1}/{epoch_num}, Ite {ite_num}] Loss: {running_loss/50:.4f}"
+                    f"[Epoch {epoch+1}/{epoch_num}, Ite {ite_num}] Loss: {running_loss/50:.4f}, LR: {learning_rate:.2e}"
                 )
                 running_loss = 0.0
 
-        # 计算当前epoch耗时
+        # ======= Epoch 结束处理 =======
+        # 更新学习率
+        # scheduler.step()
+        
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
         epoch_times.append(epoch_duration)
         
-        # 计算epoch平均loss
         avg_epoch_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
-        avg_epoch_target_loss = epoch_target_loss / epoch_batches if epoch_batches > 0 else 0  # 新增
+        avg_epoch_target_loss = epoch_target_loss / epoch_batches if epoch_batches > 0 else 0
         
-        # ======= 记录每个epoch的信息到TensorBoard =======
+        # 记录到 TensorBoard
         if writer is not None:
             writer.add_scalar('Loss/train_epoch', avg_epoch_loss, epoch + 1)
-            writer.add_scalar('Loss/target_epoch', avg_epoch_target_loss, epoch + 1)  # 新增
+            writer.add_scalar('Loss/target_epoch', avg_epoch_target_loss, epoch + 1)
             writer.add_scalar('Time/epoch_seconds', epoch_duration, epoch + 1)
-            writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch + 1)
-        # ================================================
+            writer.add_scalar('Learning_Rate', learning_rate, epoch + 1)
         
-        # 打印epoch信息
+        # 打印 Epoch 信息
         avg_epoch_time = sum(epoch_times) / len(epoch_times)
         remaining_epochs = epoch_num - (epoch + 1)
         estimated_remaining = avg_epoch_time * remaining_epochs
         
         logger.info(f"")
         logger.info(f"=== Epoch {epoch + 1}/{epoch_num} 完成 ===")
-        logger.info(f"    平均Loss: {avg_epoch_loss:.6f}")
+        logger.info(f"    平均Loss: {avg_epoch_loss:.6f} (Target: {avg_epoch_target_loss:.6f})")
+        logger.info(f"    当前LR: {learning_rate:.2e}")
         logger.info(f"    本Epoch耗时: {epoch_duration:.2f}s ({epoch_duration/60:.2f}min)")
-        logger.info(f"    平均Epoch耗时: {avg_epoch_time:.2f}s")
         logger.info(f"    预计剩余时间: {estimated_remaining/60:.1f}min ({estimated_remaining/3600:.2f}h)")
 
-        # 每个 10 Epoch 保存一次
+        # # 保存最佳模型
+        # if avg_epoch_loss < best_loss:
+        #     best_loss = avg_epoch_loss
+        #     best_path = f"{model_dir}{model_name}_best.pth"
+        #     torch.save(net.state_dict(), best_path)
+        #     logger.success(f"🏆 New best model saved: {best_path} (loss: {best_loss:.6f})")
+
+        # 每 10 Epoch 保存一次
         if (epoch + 1) % 10 == 0:
             save_path = f"{model_dir}{model_name}_epoch_{epoch+1}.pth"
             torch.save(net.state_dict(), save_path)
-            logger.success(f"Model saved: {save_path}")
+            logger.info(f"Checkpoint saved: {save_path}")
 
-    # ======= 训练结束，输出统计信息 =======
+    # ======= 训练结束 =======
     total_end_time = time.time()
     total_duration = total_end_time - total_start_time
     
@@ -259,17 +252,11 @@ def main():
     logger.success("训练完成!")
     logger.info("=" * 50)
     logger.info(f"总训练时间: {total_duration:.2f}s ({total_duration/60:.2f}min, {total_duration/3600:.2f}h)")
-    logger.info(f"总Epoch数: {epoch_num}")
-    logger.info(f"平均每Epoch耗时: {sum(epoch_times)/len(epoch_times):.2f}s")
-    logger.info(f"最短Epoch耗时: {min(epoch_times):.2f}s")
-    logger.info(f"最长Epoch耗时: {max(epoch_times):.2f}s")
+    logger.info(f"最佳Loss: {best_loss:.6f}")
     
-    # 关闭TensorBoard writer
     if writer is not None:
         writer.close()
-        logger.info(f"TensorBoard logs saved to: {TENSORBOARD_LOG_DIR}")
-        logger.info(f"查看训练曲线: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
-    # ======================================
+        logger.info(f"TensorBoard logs: {TENSORBOARD_LOG_DIR}")
 
 
 if __name__ == "__main__":

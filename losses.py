@@ -11,36 +11,39 @@ class FaintDefectLoss(nn.Module):
         self.gamma = gamma
 
     def forward(self, pred, target):
-        # pred: [B, 1, H, W]
+        # pred: [B, 1, H, W] - 模型输出已经 sigmoid 过了
         # target: [B, 1, H, W]
+        
+        # 强制 clamp 到安全范围，避免 BCE 的 log(0) 问题
+        eps = 1e-6
+        pred = torch.clamp(pred, min=eps, max=1.0 - eps)
         
         # 1. Tversky Loss (专门解决极小目标梯度消失)
         smooth = 1.0
-        pred = pred.view(-1)
-        target = target.view(-1)
+        pred_flat = pred.view(-1)
+        target_flat = target.view(-1)
         
         # True Positives, False Positives, False Negatives
-        TP = (pred * target).sum()
-        FP = ((1 - target) * pred).sum()
-        FN = (target * (1 - pred)).sum()
+        TP = (pred_flat * target_flat).sum()
+        FP = ((1 - target_flat) * pred_flat).sum()
+        FN = (target_flat * (1 - pred_flat)).sum()
         
         Tversky = (TP + smooth) / (TP + self.alpha * FP + self.beta * FN + smooth)
         tversky_loss = 1 - Tversky
 
         # 2. Focal Loss (解决淡缺陷难分问题)
-        # 加上 clamp 防止 log(0)
-        pred = torch.clamp(pred, min=1e-7, max=1-1e-7)
-        bce = -(target * torch.log(pred) + (1-target) * torch.log(1-pred))
+        bce = -(target * torch.log(pred) + (1 - target) * torch.log(1 - pred))
         
         # 计算 focal 权重: (1-pt)^gamma
-        pt = torch.where(target == 1, pred, 1-pred)
+        pt = torch.where(target == 1, pred, 1 - pred)
         focal_weight = (1 - pt) ** self.gamma
         
         focal_loss = (focal_weight * bce).mean()
         
         # 3. 组合: Tversky 负责轮廓召回，Focal 负责像素分类
-        # 0.7 : 0.3 的比例倾向于结构性召回
-        return 0.7 * tversky_loss + 0.3 * focal_loss
+        total_loss = 0.7 * tversky_loss + 0.3 * focal_loss
+        
+        return total_loss
 
 def muti_loss_fusion(criterion, d0, d1, d2, d3, d4, d5, d6, labels_v):
     # 深监督 Loss 计算
