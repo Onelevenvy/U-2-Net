@@ -4,3 +4,4 @@ __pycache__
 test_data/*
 wandb/*
 runs/*
+test_results/*

@@ -29,7 +29,7 @@ IMAGE_DIR = r'\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠�
 # 输出结果目录
 OUTPUT_DIR = os.path.join(os.getcwd(), 'test_data', 'overlay_results')
 # 训练好的模型路径
-MODEL_PATH = r'F:\New_SourceCode\U-2-Net\saved_models\u2net\u2net_bce_itr_910_train_2.821581_tar_0.325061.pth'
+MODEL_PATH = r'F:\New_SourceCode\U-2-Net\saved_models\u2net\u2net_bce_itr_25000_train_0.992337_tar_0.060030.pth'
 
 # 叠加颜色 (BGR格式)
 OVERLAY_COLOR = (0, 0, 255)  # 绿色
