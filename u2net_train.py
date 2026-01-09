@@ -5,10 +5,24 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 import glob
+from datetime import datetime
+import time
 
 from data_loader import RescaleT, CLAHE_Transform, ToTensorLab, SalObjDataset
 from model import U2NET, U2NETP
 from losses import FaintDefectLoss, muti_loss_fusion
+
+# ======= TensorBoard 配置 =======
+TENSORBOARD_LOG_DIR = os.path.join(os.getcwd(), 'runs')
+
+# TensorBoard 导入
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    TENSORBOARD_AVAILABLE = False
+    print("Warning: TensorBoard not available. Install with: pip install tensorboard")
+# ================================
 
 # ======= 核心参数配置 =======
 model_name = "u2netp"  # 强烈建议先用 lite 版 (u2netp)
@@ -19,7 +33,6 @@ learning_rate = 1e-3  # AdamW 初始学习率
 # 【关键】输入尺寸设置：(Height, Width)
 # 你的原图是 2000x480 (W x H)
 # 为了不压扁缺陷，我们设置一个接近 1:3 或 1:4 的矩形输入
-# 320 x 1024 是个不错的选择，既能被 32 整除，又保留了长宽比
 input_size = (224, 512)
 
 data_dir = os.path.join(os.getcwd(), "train_data", "daowenb402" + os.sep)
@@ -100,13 +113,31 @@ def main():
     # 6. 定义 Loss
     criterion = FaintDefectLoss(alpha=0.3, beta=0.7, gamma=2.0)
 
+    # ======= 初始化 TensorBoard =======
+    writer = None
+    if TENSORBOARD_AVAILABLE:
+        run_name = f"{model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        log_dir = os.path.join(TENSORBOARD_LOG_DIR, run_name)
+        writer = SummaryWriter(log_dir=log_dir)
+        print(f"TensorBoard initialized! Log dir: {log_dir}")
+        print(f"启动 TensorBoard 命令: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
+    # ===================================
+
     # 7. 训练循环
     ite_num = 0
     running_loss = 0.0
 
     print("--- Start Training ---")
+    
+    # 记录总训练开始时间
+    total_start_time = time.time()
+    epoch_times = []  # 存储每个epoch的耗时
+    
     for epoch in range(epoch_num):
         net.train()
+        epoch_start_time = time.time()  # 记录当前epoch开始时间
+        epoch_loss = 0.0
+        epoch_batches = 0
 
         for i, data in enumerate(salobj_dataloader):
             ite_num += 1
@@ -130,7 +161,16 @@ def main():
             loss.backward()
             optimizer.step()
 
-            running_loss += loss.item()
+            current_loss = loss.item()
+            running_loss += current_loss
+            epoch_loss += current_loss
+            epoch_batches += 1
+
+            # ======= 记录每次迭代的loss到TensorBoard =======
+            if writer is not None:
+                writer.add_scalar('Loss/train_iter', current_loss, ite_num)
+                writer.add_scalar('Loss/target_iter', loss2.item(), ite_num)
+            # ================================================
 
             if ite_num % 50 == 0:
                 print(
@@ -138,11 +178,58 @@ def main():
                 )
                 running_loss = 0.0
 
-        # 每个 Epoch 保存一次
+        # 计算当前epoch耗时
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - epoch_start_time
+        epoch_times.append(epoch_duration)
+        
+        # 计算epoch平均loss
+        avg_epoch_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
+        
+        # ======= 记录每个epoch的信息到TensorBoard =======
+        if writer is not None:
+            writer.add_scalar('Loss/train_epoch', avg_epoch_loss, epoch + 1)
+            writer.add_scalar('Time/epoch_seconds', epoch_duration, epoch + 1)
+            writer.add_scalar('Learning_Rate', optimizer.param_groups[0]['lr'], epoch + 1)
+        # ================================================
+        
+        # 打印epoch信息
+        avg_epoch_time = sum(epoch_times) / len(epoch_times)
+        remaining_epochs = epoch_num - (epoch + 1)
+        estimated_remaining = avg_epoch_time * remaining_epochs
+        
+        print(f"\n=== Epoch {epoch + 1}/{epoch_num} 完成 ===")
+        print(f"    平均Loss: {avg_epoch_loss:.6f}")
+        print(f"    本Epoch耗时: {epoch_duration:.2f}s ({epoch_duration/60:.2f}min)")
+        print(f"    平均Epoch耗时: {avg_epoch_time:.2f}s")
+        print(f"    预计剩余时间: {estimated_remaining/60:.1f}min ({estimated_remaining/3600:.2f}h)")
+        print("")
+
+        # 每个 10 Epoch 保存一次
         if (epoch + 1) % 10 == 0:
             save_path = f"{model_dir}{model_name}_epoch_{epoch+1}.pth"
             torch.save(net.state_dict(), save_path)
             print(f"Model saved: {save_path}")
+
+    # ======= 训练结束，输出统计信息 =======
+    total_end_time = time.time()
+    total_duration = total_end_time - total_start_time
+    
+    print("\n" + "=" * 50)
+    print("训练完成!")
+    print("=" * 50)
+    print(f"总训练时间: {total_duration:.2f}s ({total_duration/60:.2f}min, {total_duration/3600:.2f}h)")
+    print(f"总Epoch数: {epoch_num}")
+    print(f"平均每Epoch耗时: {sum(epoch_times)/len(epoch_times):.2f}s")
+    print(f"最短Epoch耗时: {min(epoch_times):.2f}s")
+    print(f"最长Epoch耗时: {max(epoch_times):.2f}s")
+    
+    # 关闭TensorBoard writer
+    if writer is not None:
+        writer.close()
+        print(f"\nTensorBoard logs saved to: {TENSORBOARD_LOG_DIR}")
+        print(f"查看训练曲线: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
+    # ======================================
 
 
 if __name__ == "__main__":

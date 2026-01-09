@@ -11,8 +11,8 @@ from model import U2NETP  # 必须用 U2NETP
 
 # ======= 用户配置 =======
 # 1. 测试图片目录
-# IMAGE_DIR = r'\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹'
-IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\1_train\100pcs"
+IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
+# IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\1_train\100pcs"
 
 # 2. 训练好的模型路径 (确保是 u2netp 的权重)
 MODEL_PATH = r"F:\New_SourceCode\U-2-Net\saved_models\u2netp\u2netp_epoch_140.pth"
@@ -21,7 +21,7 @@ MODEL_PATH = r"F:\New_SourceCode\U-2-Net\saved_models\u2netp\u2netp_epoch_140.pt
 OUTPUT_DIR = os.path.join(os.getcwd(), "test_results")
 
 # 4. 输入尺寸 (Height, Width) - 必须与训练时的 input_size 一致！
-# 你的原图是 2000x480，训练时我建议的是 (320, 1024)
+# 原图是 2000x480，训练时建议等比例缩小到640以内
 INPUT_SIZE = (224, 512)
 
 # 5. 叠加显示配置
@@ -207,7 +207,7 @@ def main():
 
     for i, img_path in enumerate(image_list):
         fname = os.path.basename(img_path)
-        print(f"[{i+1}/{len(image_list)}] Processing: {fname}")
+        # print(f"[{i+1}/{len(image_list)}] Processing: {fname}")
 
         # 3. 预处理
         img_tensor, orig_shape, orig_img_bgr = preprocess_image(img_path, INPUT_SIZE)
@@ -216,7 +216,14 @@ def main():
             continue
 
         # 4. 推理
+        import time
+
+        s = time.perf_counter()
         pred_mask = predict(net, img_tensor)
+        e = time.perf_counter()
+
+        t = (e - s) * 1000
+        print("====================", t)
 
         # 5. 保存结果
         save_path = os.path.join(OUTPUT_DIR, fname)

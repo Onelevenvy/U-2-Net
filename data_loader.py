@@ -8,7 +8,7 @@ import cv2
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-# ================= 核心增强: CLAHE (限制对比度自适应直方图均衡) =================
+
 class CLAHE_Transform(object):
     def __init__(self, clip_limit=2.0, tile_grid_size=(8, 8)):
         self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
@@ -37,7 +37,7 @@ class CLAHE_Transform(object):
 
         return {'imidx':imidx, 'image':img_new, 'label':label}
 
-# ================= 修复版 RescaleT (支持长方形输入) =================
+
 class RescaleT(object):
     def __init__(self, output_size):
         # output_size 应该是 (height, width) 或者 int
@@ -60,7 +60,6 @@ class RescaleT(object):
 
         return {'imidx':imidx, 'image':img, 'label':lbl}
 
-# ================= 标准化 (简化版) =================
 class ToTensorLab(object):
     def __init__(self, flag=0):
         self.flag = flag
