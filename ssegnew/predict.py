@@ -30,7 +30,7 @@ PROJECT_NAME = "daowen_b402"
 MODEL_FILE = ""  # 例如 "u2netp_epoch_200.pth"，留空自动选择
 
 # 3. 测试图片目录
-TEST_IMAGE_DIR = r"F:\New_SourceCode\U-2-Net\saved_models\u2netp\u2netp_epoch_300.pth"
+TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
 
 
 
