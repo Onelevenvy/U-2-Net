@@ -246,7 +246,8 @@ def overlay_result(original_img, pred_mask, output_path, img_path=None):
     
     # 拼接: 上=预测结果, 下=原图(带GT标注)
     combined = np.vstack([overlay, original_with_annotation])
-    cv2.imwrite(output_path, combined)
+    # cv2.imwrite(output_path, combined)
+    cv2.imencode(".jpg", combined)[1].tofile(output_path)
 
 
 # =====================================================================

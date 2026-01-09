@@ -136,7 +136,8 @@ class SalObjDataset(Dataset):
 
     def __getitem__(self, idx):
         # 读取图片 - 使用 cv2 比 skimage.io 快 2-3 倍
-        image = cv2.imread(self.image_name_list[idx], cv2.IMREAD_COLOR)
+        # image = cv2.imread(self.image_name_list[idx], cv2.IMREAD_COLOR)
+        image = cv2.imdecode(np.fromfile(self.image_name_list[idx], dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             # 回退到 skimage
             image = io.imread(self.image_name_list[idx])
@@ -151,7 +152,9 @@ class SalObjDataset(Dataset):
             label = np.zeros(image.shape[0:2], dtype=np.uint8)
         else:
             # 使用 cv2 读取灰度图
-            label = cv2.imread(self.label_name_list[idx], cv2.IMREAD_GRAYSCALE)
+            
+            # label = cv2.imread(self.label_name_list[idx], cv2.IMREAD_GRAYSCALE)
+            label = cv2.imdecode(np.fromfile(self.label_name_list[idx], dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
             if label is None:
                 # 回退到 skimage
                 label_3 = io.imread(self.label_name_list[idx])
