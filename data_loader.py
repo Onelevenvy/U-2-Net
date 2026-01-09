@@ -10,11 +10,30 @@ from torchvision import transforms
 
 
 class CLAHE_Transform(object):
+    """
+    CLAHE (Contrast Limited Adaptive Histogram Equalization) Transform.
+    
+    注意：cv2.CLAHE 对象无法被 pickle 序列化，所以不能在 __init__ 中创建。
+    这会导致 Windows 上多进程 DataLoader (num_workers > 0) 报错。
+    解决方案：在 __call__ 中延迟创建 CLAHE 对象。
+    """
     def __init__(self, clip_limit=2.0, tile_grid_size=(8, 8)):
-        self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+        # 只保存参数，不创建 CLAHE 对象 (避免 pickle 问题)
+        self.clip_limit = clip_limit
+        self.tile_grid_size = tile_grid_size
+        self._clahe = None  # 延迟初始化
+
+    def _get_clahe(self):
+        """惰性创建 CLAHE 对象"""
+        if self._clahe is None:
+            self._clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
+        return self._clahe
 
     def __call__(self, sample):
         imidx, image, label = sample['imidx'], sample['image'], sample['label']
+        
+        # 获取 CLAHE 对象 (首次调用时创建)
+        clahe = self._get_clahe()
 
         # 确保图片是 uint8
         if image.max() <= 1.0:
@@ -25,13 +44,13 @@ class CLAHE_Transform(object):
         # 1. 如果是灰度图，直接做
         if len(image.shape) == 2 or image.shape[2] == 1:
             if len(image.shape) == 3: img_uint8 = img_uint8[:,:,0]
-            img_new = self.clahe.apply(img_uint8)
+            img_new = clahe.apply(img_uint8)
             img_new = img_new[:,:,np.newaxis]
         # 2. 如果是彩色图，转到 LAB 空间对 L 通道做
         else:
             lab = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2LAB)
             l, a, b = cv2.split(lab)
-            l_clahe = self.clahe.apply(l)
+            l_clahe = clahe.apply(l)
             lab_new = cv2.merge((l_clahe, a, b))
             img_new = cv2.cvtColor(lab_new, cv2.COLOR_LAB2RGB)
 

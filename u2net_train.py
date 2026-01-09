@@ -15,10 +15,9 @@ from data_loader import RescaleT, CLAHE_Transform, ToTensorLab, SalObjDataset
 from model import U2NET, U2NETP
 from losses import FaintDefectLoss, muti_loss_fusion
 
-# ======= 性能优化配置 (安全的加速) =======
+
 cudnn.benchmark = True  # 固定尺寸输入时，cudnn会自动选择最优算法
 
-# ======= TensorBoard 配置 =======
 TENSORBOARD_LOG_DIR = os.path.join(os.getcwd(), 'runs')
 
 try:
@@ -29,12 +28,15 @@ except ImportError:
     logger.warning("TensorBoard not available. Install with: pip install tensorboard")
 
 # ======= 核心参数配置 =======
-model_name = "u2netp"  # 强烈建议先用 lite 版 (u2netp)
+model_name = "u2netp"  #  lite 版 (u2netp)
+# model_name = "u2net"  #  
 batch_size_train = 8
 epoch_num = 300
 learning_rate = 1e-3  # 初始学习率
 
-# 【关键】输入尺寸设置：(Height, Width)
+# 输入尺寸设置：(Height, Width)
+# 原图是 2000x480，训练时建议等比例缩小到640以内
+
 input_size = (224, 512)
 
 data_dir = os.path.join(os.getcwd(), "train_data", "daowenb402" + os.sep)
@@ -65,13 +67,13 @@ def main():
         transform=transforms.Compose(
             [
                 RescaleT(input_size),
-              
+                CLAHE_Transform(), 
                 ToTensorLab(flag=0),
             ]
         ),
     )
 
-    # ======= DataLoader 加速 (安全的) =======
+ 
     # Windows 上 num_workers > 0 可能有问题，如果报错就改回 0
     num_workers = 4
     salobj_dataloader = DataLoader(
@@ -121,7 +123,7 @@ def main():
     # 5. 定义优化器 (AdamW 带权重衰减)
     optimizer = optim.AdamW(net.parameters(), lr=learning_rate, weight_decay=1e-4)
     
-    # ======= 学习率调度器 (关键！帮助收敛) =======
+    # ======= 学习率调度器  =======
     # CosineAnnealingWarmRestarts: 周期性重启，避免陷入局部最优
     # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=20, T_mult=2, eta_min=1e-6)
     # logger.info("Scheduler: CosineAnnealingWarmRestarts (T_0=20, T_mult=2)")
