@@ -6,16 +6,15 @@ import os
 import cv2
 import torch
 import numpy as np
-from torch.autograd import Variable
 from model import U2NETP  # 必须用 U2NETP
 
 # ======= 用户配置 =======
 # 1. 测试图片目录
-IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
+IMAGE_DIR = r"F:\DL项目测试\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
 # IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\1_train\100pcs"
 
 # 2. 训练好的模型路径 (确保是 u2netp 的权重)
-MODEL_PATH = r"F:\New_SourceCode\U-2-Net\saved_models\u2netp\u2netp_epoch_140.pth"
+MODEL_PATH = r"F:\New_SourceCode\U-2-Net\saved_models\u2netp\u2netp_epoch_200.pth"
 
 # 3. 输出结果目录
 OUTPUT_DIR = os.path.join(os.getcwd(), "test_results")
@@ -131,23 +130,20 @@ def load_model(model_path):
 
 def predict(net, img_tensor):
     if torch.cuda.is_available():
-        img_tensor = Variable(img_tensor.cuda())
-    else:
-        img_tensor = Variable(img_tensor)
+        img_tensor = img_tensor.cuda()  # 不需要 Variable，PyTorch 0.4+ 已弃用
 
     with torch.no_grad():
         # U2NETP 返回 tuple (d0, d1, ... d6)
-        d0, d1, d2, d3, d4, d5, d6 = net(img_tensor)
+        # d0 是主输出，d1-d6 是深监督输出（推理时不需要）
+        d0, *_ = net(img_tensor)  # 忽略 d1-d6，更清晰
 
-        # d0 是主输出，d1-d6 是深监督输出
         # 输出是 Logits，需要 Sigmoid 转成概率
-        pred = d0[:, 0, :, :]
-        pred = torch.sigmoid(pred)  # 这一步很重要！
+        pred = torch.sigmoid(d0[:, 0, :, :])
 
-        # 归一化到 0-1 (虽然 sigmoid 已经是 0-1，但为了保险)
-        pred = (pred - torch.min(pred)) / (torch.max(pred) - torch.min(pred) + 1e-8)
+        # 归一化到 0-1，防止极端值影响可视化
+        pred = (pred - pred.min()) / (pred.max() - pred.min() + 1e-8)
 
-    return pred.cpu().data.numpy().squeeze()  # (H, W)
+    return pred.cpu().numpy().squeeze()  # (H, W)
 
 
 def overlay_result(original_img, pred_mask, output_path):

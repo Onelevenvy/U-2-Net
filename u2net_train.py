@@ -7,6 +7,7 @@ from torchvision import transforms
 import glob
 from datetime import datetime
 import time
+from loguru import logger
 
 from data_loader import RescaleT, CLAHE_Transform, ToTensorLab, SalObjDataset
 from model import U2NET, U2NETP
@@ -21,11 +22,12 @@ try:
     TENSORBOARD_AVAILABLE = True
 except ImportError:
     TENSORBOARD_AVAILABLE = False
-    print("Warning: TensorBoard not available. Install with: pip install tensorboard")
+    logger.warning("TensorBoard not available. Install with: pip install tensorboard")
 # ================================
 
 # ======= 核心参数配置 =======
 model_name = "u2netp"  # 强烈建议先用 lite 版 (u2netp)
+# model_name = "u2net" 
 batch_size_train = 8
 epoch_num = 200  # 有预训练权重的话，200够了
 learning_rate = 1e-3  # AdamW 初始学习率
@@ -54,7 +56,7 @@ def main():
         lbl_name = img_name.replace(image_ext, label_ext)
         tra_lbl_name_list.append(os.path.join(data_dir, tra_label_dir, lbl_name))
 
-    print(f"--- Train images: {len(tra_img_name_list)} ---")
+    logger.info(f"Train images: {len(tra_img_name_list)}")
 
     # 2. 定义 DataLoader
     # 注意 transforms 的顺序：Rescale(矩形) -> CLAHE(增强) -> ToTensor
@@ -64,7 +66,7 @@ def main():
         transform=transforms.Compose(
             [
                 RescaleT(input_size),  # 使用矩形尺寸 (320, 1024)
-                CLAHE_Transform(),  # 物理增强淡缺陷
+                # CLAHE_Transform(),  # 物理增强淡缺陷
                 ToTensorLab(flag=0),
             ]
         ),
@@ -85,15 +87,15 @@ def main():
 
     # 4. 加载预训练权重 (必须做!)
     pretrained_path = os.path.join(
-        os.getcwd(), "saved_models", "u2netp.pth"
+        os.getcwd(), "saved_models","pretrain", f"{model_name}.pth"
     )  # 确保你有这个文件
     if os.path.exists(pretrained_path):
-        print(f"Loading pretrained: {pretrained_path}")
+        logger.info(f"Loading pretrained: {pretrained_path}")
         try:
             net.load_state_dict(torch.load(pretrained_path), strict=False)
         except Exception as e:
-            print(f"Pretrained load warning: {e}")
-            print("Try loading strictly matching keys...")
+            logger.warning(f"Pretrained load warning: {e}")
+            logger.info("Try loading strictly matching keys...")
             pretrained_dict = torch.load(pretrained_path)
             model_dict = net.state_dict()
             pretrained_dict = {
@@ -103,9 +105,9 @@ def main():
             }
             model_dict.update(pretrained_dict)
             net.load_state_dict(model_dict)
-            print("Partial weights loaded!")
+            logger.success("Partial weights loaded!")
     else:
-        print("WARNING: No pretrained weights found! Training will be slow.")
+        logger.warning("No pretrained weights found! Training will be slow.")
 
     # 5. 定义优化器 (AdamW)
     optimizer = optim.AdamW(net.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -119,15 +121,15 @@ def main():
         run_name = f"{model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         log_dir = os.path.join(TENSORBOARD_LOG_DIR, run_name)
         writer = SummaryWriter(log_dir=log_dir)
-        print(f"TensorBoard initialized! Log dir: {log_dir}")
-        print(f"启动 TensorBoard 命令: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
+        logger.info(f"TensorBoard initialized! Log dir: {log_dir}")
+        logger.info(f"启动 TensorBoard 命令: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
     # ===================================
 
     # 7. 训练循环
     ite_num = 0
     running_loss = 0.0
 
-    print("--- Start Training ---")
+    logger.info("Start Training")
     
     # 记录总训练开始时间
     total_start_time = time.time()
@@ -176,7 +178,7 @@ def main():
             # ================================================
 
             if ite_num % 50 == 0:
-                print(
+                logger.info(
                     f"[Epoch {epoch+1}/{epoch_num}, Ite {ite_num}] Loss: {running_loss/50:.4f}"
                 )
                 running_loss = 0.0
@@ -203,37 +205,38 @@ def main():
         remaining_epochs = epoch_num - (epoch + 1)
         estimated_remaining = avg_epoch_time * remaining_epochs
         
-        print(f"\n=== Epoch {epoch + 1}/{epoch_num} 完成 ===")
-        print(f"    平均Loss: {avg_epoch_loss:.6f}")
-        print(f"    本Epoch耗时: {epoch_duration:.2f}s ({epoch_duration/60:.2f}min)")
-        print(f"    平均Epoch耗时: {avg_epoch_time:.2f}s")
-        print(f"    预计剩余时间: {estimated_remaining/60:.1f}min ({estimated_remaining/3600:.2f}h)")
-        print("")
+        logger.info(f"")
+        logger.info(f"=== Epoch {epoch + 1}/{epoch_num} 完成 ===")
+        logger.info(f"    平均Loss: {avg_epoch_loss:.6f}")
+        logger.info(f"    本Epoch耗时: {epoch_duration:.2f}s ({epoch_duration/60:.2f}min)")
+        logger.info(f"    平均Epoch耗时: {avg_epoch_time:.2f}s")
+        logger.info(f"    预计剩余时间: {estimated_remaining/60:.1f}min ({estimated_remaining/3600:.2f}h)")
 
         # 每个 10 Epoch 保存一次
         if (epoch + 1) % 10 == 0:
             save_path = f"{model_dir}{model_name}_epoch_{epoch+1}.pth"
             torch.save(net.state_dict(), save_path)
-            print(f"Model saved: {save_path}")
+            logger.success(f"Model saved: {save_path}")
 
     # ======= 训练结束，输出统计信息 =======
     total_end_time = time.time()
     total_duration = total_end_time - total_start_time
     
-    print("\n" + "=" * 50)
-    print("训练完成!")
-    print("=" * 50)
-    print(f"总训练时间: {total_duration:.2f}s ({total_duration/60:.2f}min, {total_duration/3600:.2f}h)")
-    print(f"总Epoch数: {epoch_num}")
-    print(f"平均每Epoch耗时: {sum(epoch_times)/len(epoch_times):.2f}s")
-    print(f"最短Epoch耗时: {min(epoch_times):.2f}s")
-    print(f"最长Epoch耗时: {max(epoch_times):.2f}s")
+    logger.info("")
+    logger.info("=" * 50)
+    logger.success("训练完成!")
+    logger.info("=" * 50)
+    logger.info(f"总训练时间: {total_duration:.2f}s ({total_duration/60:.2f}min, {total_duration/3600:.2f}h)")
+    logger.info(f"总Epoch数: {epoch_num}")
+    logger.info(f"平均每Epoch耗时: {sum(epoch_times)/len(epoch_times):.2f}s")
+    logger.info(f"最短Epoch耗时: {min(epoch_times):.2f}s")
+    logger.info(f"最长Epoch耗时: {max(epoch_times):.2f}s")
     
     # 关闭TensorBoard writer
     if writer is not None:
         writer.close()
-        print(f"\nTensorBoard logs saved to: {TENSORBOARD_LOG_DIR}")
-        print(f"查看训练曲线: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
+        logger.info(f"TensorBoard logs saved to: {TENSORBOARD_LOG_DIR}")
+        logger.info(f"查看训练曲线: tensorboard --logdir={TENSORBOARD_LOG_DIR}")
     # ======================================
 
 
