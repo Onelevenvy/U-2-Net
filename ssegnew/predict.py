@@ -24,14 +24,14 @@ from model import U2NET, U2NETP
 # =====================================================================
 
 # 1. 项目名称 (与训练时的 PROJECT_NAME 保持一致)
-PROJECT_NAME = "xmy"
+PROJECT_NAME = "33"
 
 # 2. 使用哪个模型 (留空则自动使用 config.json 中的 best_model)
 MODEL_FILE = ""  # 例如 "u2netp_epoch_200.pth"，留空自动选择
 
 # 3. 测试图片目录
-# TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\2_新美洋\2_Skolpha\1_train\100pcs"
-TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\2_新美洋\2_Skolpha\2_test\1_画线+膜破"
+TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\000test\3+5+12\save_generate(3+5+12-test)"
+# TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\2_新美洋\2_Skolpha\2_test\1_画线+膜破"
 
 
 
