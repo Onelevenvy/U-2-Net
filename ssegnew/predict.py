@@ -24,13 +24,14 @@ from model import U2NET, U2NETP
 # =====================================================================
 
 # 1. 项目名称 (与训练时的 PROJECT_NAME 保持一致)
-PROJECT_NAME = "daowen_b402"
+PROJECT_NAME = "xmy"
 
 # 2. 使用哪个模型 (留空则自动使用 config.json 中的 best_model)
 MODEL_FILE = ""  # 例如 "u2netp_epoch_200.pth"，留空自动选择
 
 # 3. 测试图片目录
-TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
+# TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\2_新美洋\2_Skolpha\1_train\100pcs"
+TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\2_新美洋\2_Skolpha\2_test\1_画线+膜破"
 
 
 
@@ -306,7 +307,7 @@ def overlay_result(original_img, pred_mask, output_path, img_path=None, num_clas
     
     # 拼接: 上=预测结果, 下=原图(带GT标注)
     combined = np.vstack([overlay, original_with_annotation])
-    cv2.imwrite(output_path, combined)
+    cv2.imencode(".jpg", combined)[1].tofile(output_path)
 
 
 # =====================================================================
