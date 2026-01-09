@@ -6,3 +6,5 @@ wandb/*
 runs/*
 test_results/*
 projects/*
+ssegnew/projects/*
+ssegnew/pretrain/u2net.pth
