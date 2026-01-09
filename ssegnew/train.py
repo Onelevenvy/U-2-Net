@@ -30,7 +30,7 @@ from loguru import logger
 
 from data_loader import RescaleT, CLAHE_Transform, ToTensorLab, SalObjDataset
 from model import U2NET, U2NETP
-from losses import FaintDefectLoss, muti_loss_fusion
+from losses import FaintDefectLoss, MultiClassLoss, muti_loss_fusion, get_loss_function
 
 
 cudnn.benchmark = True
@@ -55,8 +55,23 @@ BATCH_SIZE = 8
 EPOCH_NUM = 300
 LEARNING_RATE = 1e-3
 
+# 5. 多类别配置
+#    - NUM_CLASSES = 1: 二值分割 (背景 vs 目标)，输出概率图 [0,1]
+#    - NUM_CLASSES > 1: 多类别分割，输出每个类别的概率
+#    - CLASS_NAMES: labelme 中的类别名称到类别索引的映射
+#      注意: 背景固定为 0，其他类别从 1 开始编号
+NUM_CLASSES = 1  # 目前保持二值分割
 
-# 5. 其他配置
+# 类别名称映射 (仅 NUM_CLASSES > 1 时使用)
+# 例如: {"scratch": 1, "stain": 2, "crack": 3}
+# 背景自动为 0，不需要配置
+CLASS_NAMES = {}
+
+# 类别权重 (可选，用于处理类别不平衡)
+# 例如: [1.0, 2.0, 3.0] 表示类别0权重1，类别1权重2...
+CLASS_WEIGHTS = None
+
+# 6. 其他配置
 NUM_WORKERS = 4          # DataLoader 工作线程数
 SAVE_EVERY_N_EPOCHS = 10  # 每隔多少 epoch 保存一次模型
 
@@ -94,8 +109,18 @@ def polygon_to_mask(points, image_width, image_height):
     return np.array(mask)
 
 
-def convert_labelme_json(json_path, output_mask_path):
-    """将单个labelme JSON文件转换为mask图片"""
+def convert_labelme_json(json_path, output_mask_path, num_classes=1, class_names=None):
+    """
+    将单个labelme JSON文件转换为mask图片
+    
+    Args:
+        json_path: labelme JSON 文件路径
+        output_mask_path: 输出 mask 路径
+        num_classes: 类别数
+            - 1: 二值分割，所有标注合并为单一前景 (值=255)
+            - >1: 多类别分割，根据类别名称分配类别索引
+        class_names: 类别名称到索引的映射 {"label_name": class_idx}
+    """
     try:
         with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -110,21 +135,37 @@ def convert_labelme_json(json_path, output_mask_path):
         for shape in data.get('shapes', []):
             shape_type = shape.get('shape_type', '')
             points = shape.get('points', [])
+            label_name = shape.get('label', 'unknown')
             
+            # 确定像素值
+            if num_classes == 1:
+                # 二值分割: 所有前景都是 255
+                pixel_value = 255
+            else:
+                # 多类别分割: 根据类别名称获取索引
+                if class_names and label_name in class_names:
+                    pixel_value = class_names[label_name]
+                else:
+                    # 未知类别，跳过或者使用默认值
+                    logger.warning(f"未知类别 '{label_name}'，跳过")
+                    continue
+            
+            # 绘制形状
             if shape_type == 'polygon' and len(points) >= 3:
                 mask = polygon_to_mask(points, image_width, image_height)
-                combined_mask = np.maximum(combined_mask, mask)
+                # 对于多类别，后绘制的覆盖前面的
+                combined_mask[mask > 0] = pixel_value
             
             elif shape_type == 'rectangle' and len(points) == 2:
                 x1, y1 = int(points[0][0]), int(points[0][1])
                 x2, y2 = int(points[1][0]), int(points[1][1])
-                combined_mask[min(y1,y2):max(y1,y2), min(x1,x2):max(x1,x2)] = 255
+                combined_mask[min(y1,y2):max(y1,y2), min(x1,x2):max(x1,x2)] = pixel_value
             
             elif shape_type == 'circle' and len(points) == 2:
                 cx, cy = int(points[0][0]), int(points[0][1])
                 ex, ey = int(points[1][0]), int(points[1][1])
                 radius = int(np.sqrt((ex-cx)**2 + (ey-cy)**2))
-                cv2.circle(combined_mask, (cx, cy), radius, 255, -1)
+                cv2.circle(combined_mask, (cx, cy), radius, int(pixel_value), -1)
         
         # 保存mask
         mask_img = Image.fromarray(combined_mask)
@@ -200,13 +241,16 @@ def convert_dataset():
         shutil.copy2(image_file, output_image)
         
         # 转换JSON为mask
-        if convert_labelme_json(json_file, output_mask):
+        if convert_labelme_json(json_file, output_mask, NUM_CLASSES, CLASS_NAMES):
             success_count += 1
         else:
             fail_count += 1
     
     logger.info("=" * 50)
     logger.info(f"转换完成! 成功: {success_count}, 失败: {fail_count}")
+    if NUM_CLASSES > 1:
+        logger.info(f"多类别模式: {NUM_CLASSES} 个类别")
+        logger.info(f"类别映射: {CLASS_NAMES}")
     logger.info("=" * 50)
     
     return success_count > 0
@@ -262,7 +306,7 @@ def train():
         transform=transforms.Compose([
             RescaleT(INPUT_SIZE),
             CLAHE_Transform(), 
-            ToTensorLab(flag=0),
+            ToTensorLab(flag=0, num_classes=NUM_CLASSES),
         ]),
     )
 
@@ -280,40 +324,52 @@ def train():
     # 3. 定义模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if MODEL_NAME == "u2net":
-        net = U2NET(3, 1)
+        net = U2NET(3, NUM_CLASSES)
     elif MODEL_NAME == "u2netp":
-        net = U2NETP(3, 1)
+        net = U2NETP(3, NUM_CLASSES)
     else:
         logger.error(f"未知模型: {MODEL_NAME}")
         return
 
     net = net.to(device)
     logger.info(f"模型 {MODEL_NAME} 加载到设备: {device}")
+    logger.info(f"输出类别数: {NUM_CLASSES} ({'二值分割' if NUM_CLASSES == 1 else '多类别分割'})")
 
     # 4. 加载预训练权重
     if os.path.exists(PRETRAINED_PATH):
         logger.info(f"加载预训练权重: {PRETRAINED_PATH}")
         try:
-            net.load_state_dict(torch.load(PRETRAINED_PATH), strict=False)
-        except Exception as e:
-            logger.warning(f"预训练权重加载警告: {e}")
             pretrained_dict = torch.load(PRETRAINED_PATH)
             model_dict = net.state_dict()
+            
+            # 过滤掉不匹配的层 (主要是输出层如果类别数不同)
             pretrained_dict = {
                 k: v for k, v in pretrained_dict.items()
                 if k in model_dict and v.shape == model_dict[k].shape
             }
+            
+            loaded_keys = len(pretrained_dict)
+            total_keys = len(model_dict)
+            
             model_dict.update(pretrained_dict)
             net.load_state_dict(model_dict)
-            logger.success("部分权重加载成功!")
+            
+            logger.success(f"预训练权重加载成功! ({loaded_keys}/{total_keys} 层)")
+            
+            if NUM_CLASSES > 1 and loaded_keys < total_keys:
+                logger.warning("由于类别数改变，side 层和 outconv 层需要重新训练")
+                
+        except Exception as e:
+            logger.warning(f"预训练权重加载失败: {e}")
     else:
         logger.warning(f"未找到预训练权重: {PRETRAINED_PATH}")
 
     # 5. 定义优化器
     optimizer = optim.AdamW(net.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
 
-    # 6. 定义 Loss
-    criterion = FaintDefectLoss(alpha=0.3, beta=0.7, gamma=2.0)
+    # 6. 定义 Loss (自动根据类别数选择)
+    criterion = get_loss_function(NUM_CLASSES, CLASS_WEIGHTS)
+    logger.info(f"损失函数: {criterion.__class__.__name__}")
 
     # 7. 初始化 TensorBoard
     writer = None
@@ -344,7 +400,8 @@ def train():
         "project_name": PROJECT_NAME,
         "model_name": MODEL_NAME,
         "input_size": list(INPUT_SIZE),  # (H, W)
-        "num_classes": 1,
+        "num_classes": NUM_CLASSES,
+        "class_names": CLASS_NAMES if NUM_CLASSES > 1 else {},
         "use_clahe": True,
         "batch_size": BATCH_SIZE,
         "learning_rate": LEARNING_RATE,

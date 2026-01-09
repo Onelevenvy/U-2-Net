@@ -80,21 +80,35 @@ class RescaleT(object):
         return {'imidx':imidx, 'image':img, 'label':lbl}
 
 class ToTensorLab(object):
-    def __init__(self, flag=0):
+    """
+    转换为 Tensor 并进行 ImageNet 标准化
+    
+    Args:
+        flag: 保留参数
+        num_classes: 类别数
+            - 1: 二值分割，标签归一化到 0-1
+            - >1: 多类别分割，标签保持类别索引 (0, 1, 2, ...)
+    """
+    def __init__(self, flag=0, num_classes=1):
         self.flag = flag
+        self.num_classes = num_classes
 
     def __call__(self, sample):
         imidx, image, label = sample['imidx'], sample['image'], sample['label']
 
-        # 1. 处理 Label (归一化到 0-1)
-        if np.max(label) > 1:
-            label = label / 255.0
+        # 1. 处理 Label
+        if self.num_classes == 1:
+            # 二值分割: 归一化到 0-1
+            if np.max(label) > 1:
+                label = label / 255.0
+            tmpLbl = label.astype(np.float32)
+        else:
+            # 多类别分割: 保持类别索引 (0, 1, 2, ...)
+            # 假设标签已经是类别索引，不需要除以 255
+            tmpLbl = label.astype(np.float32)
         
         # 2. 处理 Image (归一化并标准化)
-        # 既然是淡缺陷，建议简单归一化即可，太复杂的 ImageNet 均值方差有时候会破坏微弱特征
-        # 这里保留你原本的 ImageNet 标准化，因为加载预训练权重需要它
         tmpImg = np.zeros((image.shape[0], image.shape[1], 3))
-        tmpLbl = np.zeros(label.shape)
 
         # 归一化到 [0, 1]
         if np.max(image) > 1:
@@ -110,10 +124,8 @@ class ToTensorLab(object):
             tmpImg[:,:,2] = (image[:,:,2]-0.406)/0.225
 
         # 处理 Label 维度
-        if len(label.shape) == 2:
-            tmpLbl = label[:, :, np.newaxis]
-        else:
-            tmpLbl = label
+        if len(tmpLbl.shape) == 2:
+            tmpLbl = tmpLbl[:, :, np.newaxis]
 
         # HWC -> CHW
         tmpImg = tmpImg.transpose((2, 0, 1))

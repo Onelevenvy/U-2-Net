@@ -35,8 +35,22 @@ TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\4
 
 
 # 4. 可视化配置
-OVERLAY_COLOR = (0, 0, 255)  # 红色 (BGR格式)
+OVERLAY_COLOR = (0, 0, 255)  # 红色 (BGR格式) - 仅二值分割使用
 MAX_ALPHA = 0.7  # 最大透明度
+
+# 多类别可视化颜色表 (BGR格式)
+# 索引 0 = 背景 (不显示), 1/2/3... = 不同类别
+CLASS_COLORS = [
+    (0, 0, 0),        # 0: 背景 - 不显示
+    (0, 0, 255),      # 1: 红色
+    (0, 255, 0),      # 2: 绿色
+    (255, 0, 0),      # 3: 蓝色
+    (0, 255, 255),    # 4: 黄色
+    (255, 0, 255),    # 5: 紫色
+    (255, 255, 0),    # 6: 青色
+    (128, 128, 255),  # 7: 淡红色
+    (128, 255, 128),  # 8: 淡绿色
+]
 
 # =====================================================================
 #                           自动计算路径
@@ -135,6 +149,7 @@ def preprocess_image(image_path, input_size, use_clahe=True):
 def load_model(config):
     """根据配置加载模型"""
     model_name = config['model_name']
+    num_classes = config.get('num_classes', 1)
     
     # 确定模型文件
     if MODEL_FILE:
@@ -149,12 +164,13 @@ def load_model(config):
         return None
     
     logger.info(f"加载模型: {model_path}")
+    logger.info(f"类别数: {num_classes} ({'二值分割' if num_classes == 1 else '多类别分割'})")
     
     # 实例化网络
     if model_name == "u2net":
-        net = U2NET(3, 1)
+        net = U2NET(3, num_classes)
     elif model_name == "u2netp":
-        net = U2NETP(3, 1)
+        net = U2NETP(3, num_classes)
     else:
         logger.error(f"未知模型类型: {model_name}")
         return None
@@ -170,17 +186,29 @@ def load_model(config):
     return net
 
 
-def predict(net, img_tensor):
-    """模型推理"""
+def predict(net, img_tensor, num_classes=1):
+    """
+    模型推理
+    
+    Returns:
+        num_classes=1: 返回概率图 [H, W], 值在 0-1 之间
+        num_classes>1: 返回类别索引图 [H, W], 值为 0,1,2,...
+    """
     if torch.cuda.is_available():
         img_tensor = img_tensor.cuda()
 
     with torch.no_grad():
         d0, *_ = net(img_tensor)
-        pred = d0[:, 0, :, :]
-        pred = (pred - pred.min()) / (pred.max() - pred.min() + 1e-8)
-
-    return pred.cpu().numpy().squeeze()
+        
+        if num_classes == 1:
+            # 二值分割: 返回概率图
+            pred = d0[:, 0, :, :]
+            pred = (pred - pred.min()) / (pred.max() - pred.min() + 1e-8)
+            return pred.cpu().numpy().squeeze()
+        else:
+            # 多类别分割: 返回类别索引
+            pred = torch.argmax(d0, dim=1)  # [B, H, W]
+            return pred.cpu().numpy().squeeze()
 
 
 def draw_labelme_annotations(img, json_path):
@@ -219,23 +247,55 @@ def draw_labelme_annotations(img, json_path):
     return img_draw
 
 
-def overlay_result(original_img, pred_mask, output_path, img_path=None):
-    """生成可视化结果"""
+def overlay_result(original_img, pred_mask, output_path, img_path=None, num_classes=1, class_names=None):
+    """
+    生成可视化结果
+    
+    Args:
+        original_img: 原图 BGR
+        pred_mask: 预测结果
+            - num_classes=1: 概率图 [H, W], 0-1
+            - num_classes>1: 类别索引图 [H, W], 0,1,2,...
+        output_path: 输出路径
+        img_path: 原图路径 (用于查找 GT 标注)
+        num_classes: 类别数
+        class_names: 类别名称映射 (dict)
+    """
     h, w = original_img.shape[:2]
     
     # 还原 mask 到原图尺寸
-    mask_resized = cv2.resize(pred_mask, (w, h), interpolation=cv2.INTER_LINEAR)
-    
-    # 热力图叠加
-    heatmap = np.zeros_like(original_img)
-    heatmap[:] = OVERLAY_COLOR
-    
-    alpha = mask_resized * MAX_ALPHA
-    alpha[alpha < 0.1] = 0
-    alpha = np.stack([alpha] * 3, axis=-1)
-    
-    overlay = original_img * (1 - alpha) + heatmap * alpha
-    overlay = overlay.astype(np.uint8)
+    if num_classes == 1:
+        # 二值分割: 用概率值作为透明度
+        mask_resized = cv2.resize(pred_mask, (w, h), interpolation=cv2.INTER_LINEAR)
+        
+        heatmap = np.zeros_like(original_img)
+        heatmap[:] = OVERLAY_COLOR
+        
+        alpha = mask_resized * MAX_ALPHA
+        alpha[alpha < 0.1] = 0
+        alpha = np.stack([alpha] * 3, axis=-1)
+        
+        overlay = original_img * (1 - alpha) + heatmap * alpha
+        overlay = overlay.astype(np.uint8)
+    else:
+        # 多类别分割: 为每个类别分配不同颜色
+        mask_resized = cv2.resize(pred_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+        
+        overlay = original_img.copy()
+        for class_idx in range(1, num_classes):  # 跳过背景 (0)
+            if class_idx < len(CLASS_COLORS):
+                color = CLASS_COLORS[class_idx]
+            else:
+                color = (128, 128, 128)  # 默认灰色
+            
+            mask_class = (mask_resized == class_idx)
+            if mask_class.any():
+                # 叠加颜色
+                for c in range(3):
+                    overlay[:, :, c][mask_class] = (
+                        original_img[:, :, c][mask_class] * (1 - MAX_ALPHA) +
+                        color[c] * MAX_ALPHA
+                    ).astype(np.uint8)
     
     # 原图 (带标注)
     original_with_annotation = original_img.copy()
@@ -261,6 +321,8 @@ def main():
     
     input_size = tuple(config['input_size'])
     use_clahe = config.get('use_clahe', True)
+    num_classes = config.get('num_classes', 1)
+    class_names = config.get('class_names', {})
     
     # 2. 创建输出目录
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -297,7 +359,7 @@ def main():
         
         # 推理
         t_start = time.perf_counter()
-        pred_mask = predict(net, img_tensor)
+        pred_mask = predict(net, img_tensor, num_classes)
         t_end = time.perf_counter()
         
         infer_time = (t_end - t_start) * 1000
@@ -305,7 +367,7 @@ def main():
         
         # 保存结果
         save_path = os.path.join(OUTPUT_DIR, fname)
-        overlay_result(orig_img_bgr, pred_mask, save_path, img_path)
+        overlay_result(orig_img_bgr, pred_mask, save_path, img_path, num_classes, class_names)
         
         logger.info(f"[{i+1}/{len(image_list)}] {fname} - {infer_time:.1f}ms")
     
