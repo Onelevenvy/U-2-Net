@@ -9,3 +9,5 @@ projects/*
 ssegnew/projects/*
 ssegnew/pretrain/u2net.pth
 ssegnew/pretrain/u2net_portrait.pth
+data/*
+.vscode/*
