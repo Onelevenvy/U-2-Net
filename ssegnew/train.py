@@ -53,7 +53,8 @@ PROJECT_NAME = "F20"
 SOURCE_DATA_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\6_F20_particle(小目标)\2_Skolpha\1_train"
 
 # 3. 模型配置
-MODEL_NAME = "u2netp"  # "u2netp" (轻量版) 或 "u2net" (完整版)
+# 3. 模型配置
+MODEL_NAME = "u2net"  # "u2netp" (轻量版) 或 "u2net" (完整版)
 
 # 4. 训练超参数
 INPUT_SIZE = (416, 512)  # (Height, Width)
@@ -439,8 +440,7 @@ def train():
     running_loss = 0.0
     best_loss = float("inf")
     
-    # 混合精度训练 Scaler
-    scaler = torch.cuda.amp.GradScaler()
+   
 
     logger.info("")
     logger.info("=" * 60)
@@ -494,24 +494,24 @@ def train():
 
             optimizer.zero_grad()
 
-            # Forward (Mixed Precision)
-            with torch.cuda.amp.autocast():
-                d0, d1, d2, d3, d4, d5, d6 = net(inputs)
-                # Loss 计算
-                loss2, loss = muti_loss_fusion(
-                    criterion, d0, d1, d2, d3, d4, d5, d6, labels
-                )
+            # Forward (Normal FP32)
+            d0, d1, d2, d3, d4, d5, d6 = net(inputs)
 
-            # Backward (Scaled)
-            scaler.scale(loss).backward()
+            # Loss 计算
+            loss2, loss = muti_loss_fusion(
+                criterion, d0, d1, d2, d3, d4, d5, d6, labels
+            )
 
-            # 梯度裁剪 (先 unscale 才能裁剪)
-            scaler.unscale_(optimizer)
+            # Backward
+            loss.backward()
+
+            # 梯度裁剪
             torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=5.0)
 
-            # Optimizer Step (Scaled)
-            scaler.step(optimizer)
-            scaler.update()
+            # Optimizer Step
+            optimizer.step()
+            
+
 
             current_loss = loss.item()
             current_target_loss = loss2.item()
@@ -536,7 +536,7 @@ def train():
         epoch_duration = epoch_end_time - epoch_start_time
         epoch_times.append(epoch_duration)
         
-        # 更新 Learning Rate
+        # [Scheduler] 更新学习率
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
 
