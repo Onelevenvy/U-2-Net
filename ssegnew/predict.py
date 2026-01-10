@@ -9,7 +9,7 @@ U2Net 项目化推理脚本
 import os
 
 # 设置可用的 GPU 卡 (必须在 import torch 之前设置)
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import os
 import json
