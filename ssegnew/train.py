@@ -12,7 +12,7 @@ import os
 
 # 设置可用的 GPU 卡 (必须在 import torch 之前设置)
 # os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6,7"
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import os  # 再次 import 以供后续使用
 import json
@@ -50,14 +50,14 @@ PROJECT_NAME = "F20"
 
 # 2. 源数据路径 (labelme 格式: 图片 + 同名 JSON 文件)
 #    支持递归搜索子文件夹
-SOURCE_DATA_DIR = r"/home/samsun/llmapp/sourcecode/U-2-Net/data/1_train"
+SOURCE_DATA_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\6_F20_particle(小目标)\2_Skolpha\1_train"
 
 # 3. 模型配置
 MODEL_NAME = "u2netp"  # "u2netp" (轻量版) 或 "u2net" (完整版)
 
 # 4. 训练超参数
 INPUT_SIZE = (416, 512)  # (Height, Width)
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 EPOCH_NUM = 300
 LEARNING_RATE = 1e-3
 
@@ -414,6 +414,9 @@ def train():
 
     # 5. 定义优化器
     optimizer = optim.AdamW(net.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+    
+    # 定义 LR 调度器 (Cosine Annealing)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2)
 
     # 6. 定义 Loss (自动根据类别数选择)
     criterion = get_loss_function(NUM_CLASSES, CLASS_WEIGHTS)
@@ -435,6 +438,9 @@ def train():
     ite_num = 0
     running_loss = 0.0
     best_loss = float("inf")
+    
+    # 混合精度训练 Scaler
+    scaler = torch.cuda.amp.GradScaler()
 
     logger.info("")
     logger.info("=" * 60)
@@ -488,21 +494,24 @@ def train():
 
             optimizer.zero_grad()
 
-            # Forward
-            d0, d1, d2, d3, d4, d5, d6 = net(inputs)
+            # Forward (Mixed Precision)
+            with torch.cuda.amp.autocast():
+                d0, d1, d2, d3, d4, d5, d6 = net(inputs)
+                # Loss 计算
+                loss2, loss = muti_loss_fusion(
+                    criterion, d0, d1, d2, d3, d4, d5, d6, labels
+                )
 
-            # Loss 计算
-            loss2, loss = muti_loss_fusion(
-                criterion, d0, d1, d2, d3, d4, d5, d6, labels
-            )
+            # Backward (Scaled)
+            scaler.scale(loss).backward()
 
-            # Backward
-            loss.backward()
-
-            # 梯度裁剪
+            # 梯度裁剪 (先 unscale 才能裁剪)
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=5.0)
 
-            optimizer.step()
+            # Optimizer Step (Scaled)
+            scaler.step(optimizer)
+            scaler.update()
 
             current_loss = loss.item()
             current_target_loss = loss2.item()
@@ -526,6 +535,10 @@ def train():
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
         epoch_times.append(epoch_duration)
+        
+        # 更新 Learning Rate
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]["lr"]
 
         avg_epoch_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
         avg_epoch_target_loss = (
@@ -537,7 +550,7 @@ def train():
             writer.add_scalar("Loss/train_epoch", avg_epoch_loss, epoch + 1)
             writer.add_scalar("Loss/target_epoch", avg_epoch_target_loss, epoch + 1)
             writer.add_scalar("Time/epoch_seconds", epoch_duration, epoch + 1)
-            writer.add_scalar("Learning_Rate", LEARNING_RATE, epoch + 1)
+            writer.add_scalar("Learning_Rate", current_lr, epoch + 1)
 
         # 打印 Epoch 信息
         avg_epoch_time = sum(epoch_times) / len(epoch_times)
@@ -549,7 +562,7 @@ def train():
         logger.info(
             f"    平均Loss: {avg_epoch_loss:.6f} (Target: {avg_epoch_target_loss:.6f})"
         )
-        logger.info(f"    当前LR: {LEARNING_RATE:.2e}")
+        logger.info(f"    当前LR: {current_lr:.2e}")
         logger.info(
             f"    本Epoch耗时: {epoch_duration:.2f}s ({epoch_duration/60:.2f}min)"
         )
