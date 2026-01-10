@@ -28,14 +28,14 @@ from model import U2NET, U2NETP
 # =====================================================================
 
 # 1. 项目名称 (与训练时的 PROJECT_NAME 保持一致)
-PROJECT_NAME = "xmy2"
+PROJECT_NAME = "daowen_b402"
 
 # 2. 使用哪个模型 (留空则自动使用 config.json 中的 best_model)
 MODEL_FILE = ""  # 例如 "u2netp_epoch_200.pth"，留空自动选择
 
 # 3. 测试图片目录
 TEST_IMAGE_DIR = (
-   r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\2_新美洋\2_Skolpha\1_train\100pcs"
+   r"F:\DL项目测试\4_濠玮b402-刀纹\2_Skolpha\2_test\1_刀纹"
 )
 # TEST_IMAGE_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\2_新美洋\2_Skolpha\2_test\1_画线+膜破"
 
@@ -43,6 +43,7 @@ TEST_IMAGE_DIR = (
 # 4. 可视化配置
 OVERLAY_COLOR = (0, 0, 255)  # 红色 (BGR格式) - 仅二值分割使用
 MAX_ALPHA = 0.7  # 最大透明度
+CONCAT_DIRECTION = "horizontal"  # 拼图方向: "horizontal" (左右拼) 或 "vertical" (上下拼)
 
 # 多类别可视化颜色表 (BGR格式)
 # 索引 0 = 背景 (不显示), 1/2/3... = 不同类别
@@ -376,8 +377,13 @@ def overlay_result(
             original_with_annotation, json_path
         )
 
-    # 拼接: 上=预测结果, 下=原图(带GT标注)
-    combined = np.vstack([overlay, original_with_annotation])
+    # 拼接: 预测结果 + 原图(带GT标注)
+    if CONCAT_DIRECTION == "vertical":
+        # 上下拼接
+        combined = np.vstack([overlay, original_with_annotation])
+    else:
+        # 左右拼接 (默认)
+        combined = np.hstack([overlay, original_with_annotation])
     cv2.imencode(".jpg", combined)[1].tofile(output_path)
 
 
@@ -440,7 +446,6 @@ def main():
 
         infer_time = (t_end - t_start) * 1000
         total_time += infer_time
-
         # 保存结果 (传入 resized_shape 用于裁剪 padding)
         save_path = os.path.join(OUTPUT_DIR, fname)
         overlay_result(
