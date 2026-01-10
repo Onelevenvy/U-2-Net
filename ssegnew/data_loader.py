@@ -62,23 +62,121 @@ class CLAHE_Transform(object):
 
 
 class RescaleT(object):
-    def __init__(self, output_size):
-        self.output_size = output_size
+    """
+    图像缩放 Transform (MMDet/Detectron2 风格)
+    
+    策略: 短边优先缩放，长边硬限制
+    
+    Args:
+        scale: tuple (max_long, min_short) 或 int
+            - tuple: (长边最大值, 短边目标值)
+            - int: 等价于 (size, size)，即正方形
+        keep_ratio: bool，是否保持宽高比 (默认 True)
+    
+    缩放逻辑 (keep_ratio=True 时):
+        1. 先按短边缩放到 min_short
+        2. 如果此时长边超过 max_long，改为按长边缩放到 max_long
+        3. 这样保证: 长边 <= max_long (硬限制)
+        
+    示例:
+        RescaleT(512)              # 等价于 (512, 512)，方形区域
+        RescaleT((1024, 256))      # 长边最大1024，短边目标256
+        RescaleT((1333, 800))      # MMDet VOC 常用配置
+    
+    对于 2048×480 图片，scale=(1024, 256):
+        按短边: 480→256, scale=0.533, 长边=1092 (>1024!)
+        长边超了，改为: 2048→1024, scale=0.5
+        结果: 1024×240
+    """
+    
+    def __init__(self, scale, keep_ratio=True):
+        if isinstance(scale, int):
+            self.max_long = scale
+            self.min_short = scale
+        else:
+            self.max_long, self.min_short = scale
+        self.keep_ratio = keep_ratio
 
     def __call__(self, sample):
         imidx, image, label = sample["imidx"], sample["image"], sample["label"]
-
-        # 确定目标尺寸
-        if isinstance(self.output_size, int):
-            new_h, new_w = self.output_size, self.output_size
+        h, w = image.shape[:2]
+        
+        if self.keep_ratio:
+            long_side = max(h, w)
+            short_side = min(h, w)
+            
+            # Step 1: 按短边缩放到 min_short
+            scale = self.min_short / short_side
+            
+            # Step 2: 检查长边是否超限
+            new_long = long_side * scale
+            if new_long > self.max_long:
+                # 长边超了，改为按长边缩放
+                scale = self.max_long / long_side
+            
+            new_h, new_w = int(h * scale), int(w * scale)
         else:
-            # 传入格式为 (h, w)
-            new_h, new_w = self.output_size
-
+            # 直接拉伸到目标尺寸 (方形)
+            new_h, new_w = self.min_short, self.min_short
+        
         # 图像缩放 (双线性插值)
         img = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         # 标签缩放 (最近邻插值，保证标签值不被改变)
         lbl = cv2.resize(label, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        
+        return {"imidx": imidx, "image": img, "label": lbl}
+
+
+class PadToMultiple(object):
+    """
+    将图像 padding 到指定倍数
+    
+    通常用于 U-Net 类网络，确保特征图尺寸能被正确下采样和上采样。
+    Padding 在图像右下角添加（与 MMDet 一致）。
+    
+    Args:
+        divisor: int，尺寸需要是该数的倍数 (默认 32)
+        pad_val: int/float，图像 padding 填充值 (默认 0)
+        seg_pad_val: int，标签 padding 填充值 (默认 0，即背景)
+    """
+    
+    def __init__(self, divisor=32, pad_val=0, seg_pad_val=0):
+        self.divisor = divisor
+        self.pad_val = pad_val
+        self.seg_pad_val = seg_pad_val
+
+    def __call__(self, sample):
+        imidx, image, label = sample["imidx"], sample["image"], sample["label"]
+        h, w = image.shape[:2]
+        
+        # 计算需要 padding 到的目标尺寸
+        target_h = int(np.ceil(h / self.divisor)) * self.divisor
+        target_w = int(np.ceil(w / self.divisor)) * self.divisor
+        
+        pad_h = target_h - h
+        pad_w = target_w - w
+        
+        if pad_h == 0 and pad_w == 0:
+            return sample
+        
+        # Padding 图像 (右下角)
+        if len(image.shape) == 3:
+            img = cv2.copyMakeBorder(
+                image, 0, pad_h, 0, pad_w,
+                cv2.BORDER_CONSTANT, value=(self.pad_val, self.pad_val, self.pad_val)
+            )
+        else:
+            img = cv2.copyMakeBorder(
+                image, 0, pad_h, 0, pad_w,
+                cv2.BORDER_CONSTANT, value=self.pad_val
+            )
+        
+        # Padding 标签 (右下角)
+        lbl = cv2.copyMakeBorder(
+            label, 0, pad_h, 0, pad_w,
+            cv2.BORDER_CONSTANT, value=self.seg_pad_val
+        )
+        
         return {"imidx": imidx, "image": img, "label": lbl}
 
 

@@ -97,29 +97,28 @@ def cv2_read_img(file_path):
     return cv_img
 
 
-def apply_clahe(image):
-    """CLAHE 增强 (与训练代码一致)"""
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-
-    if image.dtype != np.uint8:
-        img_uint8 = (image * 255).astype(np.uint8)
-    else:
-        img_uint8 = image
-
-    lab = cv2.cvtColor(img_uint8, cv2.COLOR_RGB2LAB)
-    l, a, b = cv2.split(lab)
-    l_clahe = clahe.apply(l)
-    lab_new = cv2.merge((l_clahe, a, b))
-    img_new = cv2.cvtColor(lab_new, cv2.COLOR_LAB2RGB)
-
-    return img_new
-
-
-def preprocess_image(image_path, input_size, use_clahe=True):
-    """预处理流水线"""
+def preprocess_image(image_path, scale, use_clahe=True):
+    """
+    预处理流水线 - 复用 data_loader 的 transforms
+    
+    Args:
+        image_path: 图片路径
+        scale: tuple (max_long, min_short) 或 int
+        use_clahe: 是否使用 CLAHE 增强
+    
+    Returns:
+        img_tensor: [1, 3, H, W] 预处理后的张量
+        original_shape: (h, w) 原始图像尺寸
+        img_bgr: 原始 BGR 图像
+        resized_shape: (h, w) resize 后的尺寸 (padding 前)
+        padded_shape: (h, w) padding 后的尺寸
+    """
+    from data_loader import RescaleT, PadToMultiple, CLAHE_Transform, ToTensorLab
+    from torchvision import transforms
+    
     img_bgr = cv2_read_img(image_path)
     if img_bgr is None:
-        return None, None, None
+        return None, None, None, None, None
 
     # 灰度图转3通道
     if len(img_bgr.shape) == 2:
@@ -127,30 +126,61 @@ def preprocess_image(image_path, input_size, use_clahe=True):
     elif img_bgr.shape[2] == 4:
         img_bgr = img_bgr[:, :, :3]
 
-    original_shape = img_bgr.shape[:2]
+    original_shape = img_bgr.shape[:2]  # (h, w)
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-    # Resize
-    img_resized = cv2.resize(
-        img_rgb, (input_size[1], input_size[0]), interpolation=cv2.INTER_LINEAR
-    )
-
-    # CLAHE
+    # 构建 transform pipeline (复用 data_loader 的类)
+    transform_list = [
+        RescaleT(scale),
+        PadToMultiple(divisor=32),
+    ]
     if use_clahe:
-        img_resized = apply_clahe(img_resized)
+        transform_list.append(CLAHE_Transform())
+    transform_list.append(ToTensorLab(flag=0, num_classes=1))  # num_classes 不影响图像处理
+    
+    transform = transforms.Compose(transform_list)
+    
+    # 构造 sample (模拟 Dataset 的格式)
+    # 推理时 label 可以用空的
+    sample = {
+        "imidx": np.array([0]),
+        "image": img_rgb,
+        "label": np.zeros(original_shape, dtype=np.uint8)
+    }
+    
+    # 应用 transform
+    sample = transform(sample)
+    
+    # 获取 tensor 和相关信息
+    img_tensor = sample["image"].unsqueeze(0)  # [1, C, H, W]
+    
+    # 计算 resized_shape 和 padded_shape (使用 MMDet 风格逻辑)
+    h, w = original_shape
+    long_side = max(h, w)
+    short_side = min(h, w)
+    
+    # 解析 scale 参数
+    if isinstance(scale, int):
+        max_long, min_short = scale, scale
+    else:
+        max_long, min_short = scale
+    
+    # 按短边缩放
+    ratio = min_short / short_side
+    # 检查长边是否超限
+    if long_side * ratio > max_long:
+        ratio = max_long / long_side
+    
+    new_h, new_w = int(h * ratio), int(w * ratio)
+    resized_shape = (new_h, new_w)
+    
+    # padding 后的尺寸
+    divisor = 32
+    padded_h = int(np.ceil(new_h / divisor)) * divisor
+    padded_w = int(np.ceil(new_w / divisor)) * divisor
+    padded_shape = (padded_h, padded_w)
 
-    # 归一化 + 标准化
-    img_norm = img_resized.astype(np.float32) / 255.0
-    tmpImg = np.zeros_like(img_norm)
-    tmpImg[:, :, 0] = (img_norm[:, :, 0] - 0.485) / 0.229
-    tmpImg[:, :, 1] = (img_norm[:, :, 1] - 0.456) / 0.224
-    tmpImg[:, :, 2] = (img_norm[:, :, 2] - 0.406) / 0.225
-
-    # HWC -> CHW -> NCHW
-    tmpImg = tmpImg.transpose((2, 0, 1))
-    img_tensor = torch.from_numpy(tmpImg).unsqueeze(0).float()
-
-    return img_tensor, original_shape, img_bgr
+    return img_tensor, original_shape, img_bgr, resized_shape, padded_shape
 
 
 def load_model(config):
@@ -277,22 +307,29 @@ def draw_labelme_annotations(img, json_path):
 
 
 def overlay_result(
-    original_img, pred_mask, output_path, img_path=None, num_classes=1, class_names=None
+    original_img, pred_mask, output_path, img_path=None, num_classes=1, class_names=None,
+    resized_shape=None
 ):
     """
     生成可视化结果
 
     Args:
         original_img: 原图 BGR
-        pred_mask: 预测结果
+        pred_mask: 预测结果 (可能包含 padding 区域)
             - num_classes=1: 概率图 [H, W], 0-1
             - num_classes>1: 类别索引图 [H, W], 0,1,2,...
         output_path: 输出路径
         img_path: 原图路径 (用于查找 GT 标注)
         num_classes: 类别数
         class_names: 类别名称映射 (dict)
+        resized_shape: (h, w) resize 后的尺寸 (padding 前), 用于裁剪 padding
     """
     h, w = original_img.shape[:2]
+
+    # 裁剪掉 padding 区域 (如果有)
+    if resized_shape is not None:
+        rh, rw = resized_shape
+        pred_mask = pred_mask[:rh, :rw]
 
     # 还原 mask 到原图尺寸
     if num_classes == 1:
@@ -355,7 +392,8 @@ def main():
     if config is None:
         return
 
-    input_size = tuple(config["input_size"])
+    # 读取配置
+    input_scale = config.get("input_scale", config.get("input_size", 512))  # 兼容旧配置
     use_clahe = config.get("use_clahe", True)
     num_classes = config.get("num_classes", 1)
     class_names = config.get("class_names", {})
@@ -388,8 +426,8 @@ def main():
         fname = os.path.basename(img_path)
 
         # 预处理
-        img_tensor, orig_shape, orig_img_bgr = preprocess_image(
-            img_path, input_size, use_clahe
+        img_tensor, orig_shape, orig_img_bgr, resized_shape, padded_shape = preprocess_image(
+            img_path, input_scale, use_clahe
         )
         if img_tensor is None:
             logger.warning(f"无法读取: {fname}")
@@ -403,10 +441,11 @@ def main():
         infer_time = (t_end - t_start) * 1000
         total_time += infer_time
 
-        # 保存结果
+        # 保存结果 (传入 resized_shape 用于裁剪 padding)
         save_path = os.path.join(OUTPUT_DIR, fname)
         overlay_result(
-            orig_img_bgr, pred_mask, save_path, img_path, num_classes, class_names
+            orig_img_bgr, pred_mask, save_path, img_path, num_classes, class_names,
+            resized_shape=resized_shape
         )
 
         logger.info(f"[{i+1}/{len(image_list)}] {fname} - {infer_time:.1f}ms")

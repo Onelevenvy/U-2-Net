@@ -16,7 +16,10 @@ SOURCE_DATA_DIR = r"\\192.168.1.55\ai研究院\5_临时文件夹\czj\1.datatest\
 MODEL_NAME = "u2netp"  # "u2netp" (轻量版) 或 "u2net" (完整版)
 
 # 4. 训练超参数
-INPUT_SIZE = (480, 320)  # (Height, Width)
+# 输入尺寸配置 (MMDet 风格)
+# 格式: (长边最大值, 短边目标值)
+# 策略: 短边优先缩放到目标值，但长边不能超过最大值
+INPUT_SCALE = (1024, 256)  # 如果只传 int，等价于正方形 (size, size)
 BATCH_SIZE = 4
 EPOCH_NUM = 300
 LEARNING_RATE = 1e-3

@@ -17,7 +17,7 @@ from loguru import logger
 # 导入拆分后的模块
 import config as cfg
 import data_prep
-from data_loader import RescaleT, CLAHE_Transform, ToTensorLab, SalObjDataset
+from data_loader import RescaleT, PadToMultiple, CLAHE_Transform, ToTensorLab, SalObjDataset
 from model import U2NET, U2NETP
 from losses import muti_loss_fusion, get_loss_function
 
@@ -74,7 +74,8 @@ def train():
         lbl_name_list=tra_lbl_name_list,
         transform=transforms.Compose(
             [
-                RescaleT(cfg.INPUT_SIZE),
+                RescaleT(cfg.INPUT_SCALE),
+                PadToMultiple(divisor=32),
                 CLAHE_Transform(),
                 ToTensorLab(flag=0, num_classes=cfg.NUM_CLASSES),
             ]
@@ -189,7 +190,7 @@ def train():
     config_dict = {
         "project_name": cfg.PROJECT_NAME,
         "model_name": cfg.MODEL_NAME,
-        "input_size": list(cfg.INPUT_SIZE),  # (H, W)
+        "input_scale": list(cfg.INPUT_SCALE) if isinstance(cfg.INPUT_SCALE, tuple) else cfg.INPUT_SCALE,  # (max_long, min_short)
         "num_classes": cfg.NUM_CLASSES,
         "class_names": cfg.CLASS_NAMES if cfg.NUM_CLASSES > 1 else {},
         "use_clahe": True,
